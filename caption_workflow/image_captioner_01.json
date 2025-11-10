@@ -1,0 +1,410 @@
+{
+  "name": "ImageCaptioning_GPT4Vision_v1.0",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "image-caption",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook - Receive Images",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "auto-generated",
+      "notes": "Entry point - POST your images here\n\nExpected input:\n{\n  \"images\": [\n    {\"url\": \"https://...\", \"id\": \"img_001\"},\n    {\"url\": \"https://...\", \"id\": \"img_002\"}\n  ],\n  \"config\": {\n    \"detail_level\": \"high\",\n    \"max_caption_length\": 150,\n    \"style_prompt\": \"detailed description for AI training\"\n  }\n}"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "default_config",
+              "name": "images",
+              "value": "={{ $json.body.images || [$json.body] }}",
+              "type": "array"
+            },
+            {
+              "id": "config",
+              "name": "config",
+              "value": "={{ $json.body.config || { detail_level: 'high', max_caption_length: 150, style_prompt: 'Provide a detailed, objective description of this image suitable for training an AI model. Focus on: subjects, composition, colors, style, lighting, and technical details.' } }}",
+              "type": "object"
+            },
+            {
+              "id": "job_id",
+              "name": "job_id",
+              "value": "={{ $json.body.job_id || 'job_' + $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize-input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [460, 300],
+      "notes": "Standardizes input format and sets defaults"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-images",
+      "name": "Split Images for Processing",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300],
+      "notes": "Processes images one at a time to avoid rate limits"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "current_image",
+              "name": "current_image",
+              "value": "={{ $json.images[$index] }}",
+              "type": "object"
+            },
+            {
+              "id": "image_url",
+              "name": "image_url",
+              "value": "={{ $json.images[$index].url }}",
+              "type": "string"
+            },
+            {
+              "id": "image_id",
+              "name": "image_id",
+              "value": "={{ $json.images[$index].id || 'img_' + $index }}",
+              "type": "string"
+            },
+            {
+              "id": "config",
+              "name": "config",
+              "value": "={{ $json.config }}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-current",
+      "name": "Extract Current Image",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [900, 300],
+      "notes": "Gets the current image from the batch"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4-vision-preview\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{ $json.config.style_prompt }}\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"{{ $json.image_url }}\",\n            \"detail\": \"{{ $json.config.detail_level }}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": {{ $json.config.max_caption_length * 2 }}\n}",
+        "options": {}
+      },
+      "id": "openai-vision",
+      "name": "OpenAI Vision - Generate Caption",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "notes": "Calls GPT-4 Vision to generate image caption"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the caption from OpenAI response\nconst caption = $input.item.json.choices[0].message.content.trim();\nconst imageUrl = $input.item.json.image_url;\nconst imageId = $input.item.json.image_id;\nconst config = $input.item.json.config;\n\n// Quality scoring\nconst words = caption.split(/\\s+/);\nconst wordCount = words.length;\n\n// Quality checks\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= config.max_caption_length,\n  hasSubject: /\\b(person|character|figure|man|woman|child|animal|object|subject|individual|portrait)\\b/i.test(caption),\n  hasVisualDetails: /\\b(color|light|dark|bright|shadow|texture|composition|style|background|foreground)\\b/i.test(caption),\n  noErrors: !/\\b(error|unable|cannot|sorry|I can't)\\b/i.test(caption),\n  notTooVague: !/^(This is|The image shows|I see)/.test(caption)\n};\n\n// Calculate quality score (0-1)\nconst passedChecks = Object.values(checks).filter(Boolean).length;\nconst qualityScore = passedChecks / Object.keys(checks).length;\n\n// Determine if caption needs refinement\nconst needsRefinement = qualityScore < 0.75;\n\nreturn {\n  image_id: imageId,\n  image_url: imageUrl,\n  caption: caption,\n  word_count: wordCount,\n  quality_score: Math.round(qualityScore * 100) / 100,\n  quality_checks: checks,\n  needs_refinement: needsRefinement,\n  model_used: 'gpt-4-vision-preview',\n  captioned_at: new Date().toISOString(),\n  config: config\n};"
+      },
+      "id": "quality-check",
+      "name": "Quality Check & Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "notes": "Validates caption quality and calculates score"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs_refinement",
+              "leftValue": "={{ $json.needs_refinement }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-quality",
+      "name": "Needs Refinement?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 300],
+      "notes": "Routes low-quality captions for refinement"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4-turbo-preview\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert at refining image captions for AI training datasets. Make captions more specific, detailed, and technically accurate while maintaining natural language.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Refine and improve this image caption to be more detailed and specific for AI model training. Original caption: {{ $json.caption }}\"\n    }\n  ],\n  \"max_tokens\": {{ $json.config.max_caption_length * 2 }}\n}",
+        "options": {}
+      },
+      "id": "refine-caption",
+      "name": "Refine Caption (GPT-4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 200],
+      "notes": "Uses GPT-4 to improve low-quality captions"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract refined caption\nconst refinedCaption = $input.item.json.choices[0].message.content.trim();\nconst imageId = $input.item.json.image_id;\nconst imageUrl = $input.item.json.image_url;\nconst originalQualityScore = $input.item.json.quality_score;\n\n// Re-score the refined caption\nconst words = refinedCaption.split(/\\s+/);\nconst wordCount = words.length;\n\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= 200,\n  hasSubject: /\\b(person|character|figure|man|woman|child|animal|object|subject)\\b/i.test(refinedCaption),\n  hasVisualDetails: /\\b(color|light|dark|bright|shadow|texture|composition|style)\\b/i.test(refinedCaption),\n  noErrors: !/\\b(error|unable|cannot)\\b/i.test(refinedCaption),\n  notTooVague: !/^(This is|The image shows|I see)/.test(refinedCaption)\n};\n\nconst passedChecks = Object.values(checks).filter(Boolean).length;\nconst newQualityScore = Math.round((passedChecks / Object.keys(checks).length) * 100) / 100;\n\nreturn {\n  image_id: imageId,\n  image_url: imageUrl,\n  caption: refinedCaption,\n  word_count: wordCount,\n  quality_score: newQualityScore,\n  quality_checks: checks,\n  needs_refinement: false,\n  was_refined: true,\n  original_quality_score: originalQualityScore,\n  model_used: 'gpt-4-vision-preview + gpt-4-turbo (refined)',\n  captioned_at: new Date().toISOString()\n};"
+      },
+      "id": "rescore-refined",
+      "name": "Re-score Refined Caption",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 200],
+      "notes": "Calculates new quality score for refined caption"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-results",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2220, 300],
+      "notes": "Combines refined and non-refined captions"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "aggregate-all",
+      "name": "Aggregate All Results",
+      "type": "n8n-nodes-base.aggregateItems",
+      "typeVersion": 1,
+      "position": [2440, 300],
+      "notes": "Waits for all images to complete and combines results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all caption results\nconst results = $input.all().map(item => item.json);\n\n// Calculate summary statistics\nconst totalImages = results.length;\nconst successfulCaptions = results.filter(r => r.caption && r.caption.length > 0).length;\nconst failedCaptions = totalImages - successfulCaptions;\nconst avgQualityScore = results.reduce((sum, r) => sum + (r.quality_score || 0), 0) / totalImages;\nconst refinedCount = results.filter(r => r.was_refined).length;\nconst avgWordCount = results.reduce((sum, r) => sum + (r.word_count || 0), 0) / totalImages;\n\nreturn {\n  job_id: $('Normalize Input').item.json.job_id,\n  status: 'completed',\n  results: results,\n  summary: {\n    total_images: totalImages,\n    successful: successfulCaptions,\n    failed: failedCaptions,\n    refined_count: refinedCount,\n    avg_quality_score: Math.round(avgQualityScore * 100) / 100,\n    avg_word_count: Math.round(avgWordCount),\n    processing_time: new Date().toISOString()\n  },\n  metadata: {\n    workflow_name: 'ImageCaptioning_GPT4Vision_v1.0',\n    workflow_version: '1.0',\n    model_used: 'gpt-4-vision-preview',\n    refinement_enabled: true\n  }\n};"
+      },
+      "id": "format-output",
+      "name": "Format Final Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 300],
+      "notes": "Creates standardized output with summary statistics"
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2880, 300],
+      "notes": "Returns formatted results to the caller"
+    }
+  ],
+  "connections": {
+    "Webhook - Receive Images": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Split Images for Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Images for Processing": {
+      "main": [
+        [
+          {
+            "node": "Extract Current Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Current Image": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Vision - Generate Caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Vision - Generate Caption": {
+      "main": [
+        [
+          {
+            "node": "Quality Check & Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Check & Scoring": {
+      "main": [
+        [
+          {
+            "node": "Needs Refinement?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Refinement?": {
+      "main": [
+        [
+          {
+            "node": "Refine Caption (GPT-4)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refine Caption (GPT-4)": {
+      "main": [
+        [
+          {
+            "node": "Re-score Refined Caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-score Refined Caption": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All Results": {
+      "main": [
+        [
+          {
+            "node": "Format Final Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Output": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-11-06T00:00:00.000Z",
+  "versionId": "1.0"
+}

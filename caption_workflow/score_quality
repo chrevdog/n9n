@@ -1,0 +1,42 @@
+const it = $input.item.json;
+if (!it.success || !it.openai?.choices) {
+  return { image_id: it.image_id, filename: it.filename, caption: null, error: it.error || 'API call failed', success: false, needs_refinement: false };
+}
+const caption = it.openai.choices[0].message.content.trim();
+
+const token = it.config.object_token;
+const banned = it.config.banned_terms || [];
+const bannedHit = banned.some(t => new RegExp(`\\b${t}\\b`, 'i').test(caption));
+
+const hasTokenForObject = (it.config.prompt_template === 'lora_object') ? new RegExp(`\\b${token}\\b`).test(caption) : true;
+const hasTokenForCharacter = (it.config.prompt_template === 'lora_character') ? new RegExp(`\\b${it.config.character_token}\\b`).test(caption) : true;
+const hasStyleSuffix = (it.config.prompt_template === 'lora_style') ? new RegExp(`in the style of\\s+${it.config.style_token}\\.?$`, 'i').test(caption) : true;
+
+const physicalHits = (caption.match(/\b(form|geometry|cylindrical|faceted|matte|glossy|brushed|textured|smooth|grain|translucent|opaque|reflective|specular|diffuse|hue|tone|saturation|patina|wear|edge|seam)\b/gi) || []).length;
+const lightingHits = (caption.match(/\b(light|lighting|lit|backlit|front-lit|side-lit|overhead|diffuse|soft|hard|shadow|highlight|reflection|rim)\b/gi) || []).length;
+const cameraHits = (caption.match(/\b(angle|macro|tele|wide|focal|depth of field|shallow|framing|close-up|three-quarter|overhead|low angle|high angle)\b/gi) || []).length;
+
+const styleLeak = /\b(cinematic|beautiful|aesthetic|moody|editorial|premium|luxury|dramatic|gorgeous)\b/i.test(caption);
+
+const checks = {
+  tokens_ok: hasTokenForObject && hasTokenForCharacter && hasStyleSuffix,
+  details_ok: physicalHits >= 1 || it.config.prompt_template !== 'lora_object', // object captions often include physical traits initially
+  lighting_ok: lightingHits >= 1,
+  camera_ok: cameraHits >= 1,
+  no_banned: !bannedHit,
+  no_style_leak: !styleLeak
+};
+
+const score = Object.values(checks).filter(Boolean).length / Object.keys(checks).length;
+const needsRefinement = it.config.enable_refinement && score < it.config.quality_threshold;
+
+return {
+  image_id: it.image_id,
+  filename: it.filename,
+  caption,
+  quality_score: Math.round(score * 100) / 100,
+  quality_checks: checks,
+  needs_refinement,
+  success: true,
+  config: it.config
+};

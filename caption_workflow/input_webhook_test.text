@@ -1,0 +1,79 @@
+{
+  "name": "ImageCaptioning_Simple_v1.0",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "caption-simple",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract image data\nconst images = $input.item.json.body.images || [$input.item.json.body];\nconst config = $input.item.json.body.config || {\n  detail_level: 'high',\n  max_caption_length: 150,\n  style_prompt: 'Describe this image for AI training.'\n};\n\nreturn { images, config };"
+      },
+      "id": "setup",
+      "name": "Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4-vision-preview\",\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": [\n      {\"type\": \"text\", \"text\": \"{{ $json.config.style_prompt }}\"},\n      {\"type\": \"image_url\", \"image_url\": {\"url\": \"{{ $json.images[0].url }}\", \"detail\": \"{{ $json.config.detail_level }}\"}}\n    ]\n  }],\n  \"max_tokens\": 300\n}",
+        "options": {}
+      },
+      "id": "caption",
+      "name": "OpenAI Caption",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract caption from OpenAI response\nconst caption = $input.item.json.choices[0].message.content.trim();\nconst imageId = $input.item.json.images[0].id;\nconst filename = $input.item.json.images[0].filename;\n\nconst words = caption.split(/\\s+/);\nconst wordCount = words.length;\n\n// Simple quality check\nconst qualityScore = wordCount >= 10 ? 0.85 : 0.50;\n\nreturn {\n  status: 'success',\n  result: {\n    image_id: imageId,\n    filename: filename,\n    caption: caption,\n    word_count: wordCount,\n    quality_score: qualityScore,\n    model: 'gpt-4-vision-preview',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "format",
+      "name": "Format Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node": "Setup", "type": "main", "index": 0}]]},
+    "Setup": {"main": [[{"node": "OpenAI Caption", "type": "main", "index": 0}]]},
+    "OpenAI Caption": {"main": [[{"node": "Format Result", "type": "main", "index": 0}]]},
+    "Format Result": {"main": [[{"node": "Respond", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "settings": {"executionOrder": "v1"},
+  "staticData": {},
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-11-06T00:00:00.000Z",
+  "versionId": "1.0"
+}

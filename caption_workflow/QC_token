@@ -1,0 +1,47 @@
+function estimateTokens(txt){ const wc = (txt.match(/\S+/g)||[]).length; return Math.ceil(wc*1.33); }
+
+let it = $input.item.json;
+if (!it.success) return it;
+if (!it.config.enforce_token_cap_in_qc) return it;
+
+const limit = it.config.token_cap || 75;
+if (estimateTokens(it.caption) <= limit) return it;
+
+// Ask model to compress under the cap, preserving only env+lighting+camera; keep token
+const mode = it.config.prompt_template;
+const keepToken = mode==='lora_object' ? it.config.object_token
+               : mode==='lora_character' ? it.config.character_token
+               : null;
+
+try {
+  const resp = await $httpRequest({
+    method: 'POST',
+    url: 'https://api.openai.com/v1/chat/completions',
+    authentication: { type: 'predefinedCredentialType', name: 'openAiApi' },
+    body: {
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: `Compress to <= ${limit} tokens. Keep only environment, lighting, and camera–subject info. Preserve token "${keepToken}" if present. Single sentence.` },
+        { role: 'user', content: it.caption }
+      ],
+      max_tokens: Math.max(64, limit + 10),
+      temperature: 0.2
+    },
+    json: true
+  });
+
+  let compressed = resp.choices[0].message.content.trim();
+  // Final hard cap by words if still over
+  while (estimateTokens(compressed) > limit) {
+    const words = compressed.split(/\s+/);
+    compressed = words.slice(0, Math.max(5, Math.floor(words.length*0.9))).join(' ');
+  }
+  it = { ...it, caption: compressed, qc_token_capped: true, token_estimate: estimateTokens(compressed) };
+  return it;
+} catch (err) {
+  // Hard fallback: truncate by words conservatively
+  const words = it.caption.split(/\s+/);
+  const approxWords = Math.max(8, Math.floor(limit/1.4)); // ~1.4 words/token safety
+  const truncated = words.slice(0, approxWords).join(' ');
+  return { ...it, caption: truncated, qc_token_capped: true, qc_cap_error: err?.message || 'model cap failed', token_estimate: estimateTokens(truncated) };
+}
