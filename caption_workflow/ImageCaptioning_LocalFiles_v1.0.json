@@ -1,50 +1,108 @@
 {
-  "name": "captioner",
+  "name": "Local Image Captioner (Windows)",
   "nodes": [
     {
       "parameters": {
-        "httpMethod": "POST",
-        "path": "caption",
-        "responseMode": "responseNode",
-        "options": {}
+        "rule": {
+          "interval": [{}]
+        }
       },
-      "id": "d375a44f-dddf-493b-a0a2-2894285e3159",
-      "name": "Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1.1,
-      "position": [
-        -1584,
-        336
-      ],
-      "webhookId": "caption-v3-webhook"
+      "id": "start",
+      "name": "When clicking \"Test workflow\"",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 400]
     },
     {
       "parameters": {
-        "jsCode": "// Setup and validation\nconst body = $input.item.json.body;\nconst images = body.images || [];\n\nif (!images || images.length === 0) {\n  throw new Error('No images provided');\n}\n\n// ============================================\n// LORA TOKEN HANDLING\n// ============================================\nconst loraToken = body.config?.lora_token || body.lora_token || null;\n\n// Validate LoRA token format if provided\nif (loraToken) {\n  if (!/^[a-zA-Z0-9]{3,10}$/.test(loraToken)) {\n    throw new Error(`Invalid LoRA token format: \"${loraToken}\". Should be 3-10 alphanumeric characters (e.g., \"ohwx\", \"sks\", \"zwx\")`);\n  }\n}\n\nconst config = {\n  prompt_template: body.config?.prompt_template || 'general',\n  detail_level: body.config?.detail_level || 'high',\n  enable_refinement: body.config?.enable_refinement !== false,\n  quality_threshold: body.config?.quality_threshold || 0.75,\n  max_caption_length: body.config?.max_caption_length || 150,\n  remove_subject_details: body.config?.remove_subject_details || false,\n  lora_token: loraToken\n};\n\nconst prompts = {\n  general:\n    \"Provide a concise, objective description suitable for training. Describe what is visible: subjects present, key elements, composition/framing, lighting direction/quality/intensity, color palette, materials/textures, and any notable spatial context. Avoid brand names, identities, opinions, or narrative language.\",\n\n  object:\n    \"Describe this image for object LoRA training. Focus on environment and optics: lighting direction/quality/intensity and shadows/reflections, camera–subject relationship (angle, distance, depth of field, framing), background context and support surfaces, and general color/material cues visible without naming or identifying the object specifically. Avoid brand names, unique labels, or subjective adjectives.\",\n\n  character:\n    \"Describe this image for character LoRA training. Emphasize pose and positioning in space, lighting direction/quality/intensity and shadows, camera–subject relationship (angle, distance, focal-length feel, depth of field, framing), and surroundings. Do not list facial identity details or unique identifiers; avoid brand/style words.\",\n\n  style:\n    \"Describe the overall scene succinctly, then the dominant color palette and the quality of light (direction, softness/hardness, contrast, time-of-day feel). Mention composition tendencies or rendering approach if evident (e.g., minimal, high-contrast, soft-gradation). End the caption with: 'in the style of {{STYLE}}'. Do not identify brands or subjects.\",\n\n  scene:\n    \"Describe the setting and visible elements with attention to spatial layout and depth cues, composition/framing lines, lighting direction/quality/intensity, and palette. Include materials/textures of major surfaces. Avoid identities, brands, and subjective adjectives.\",\n\n  edit:\n    \"Write one imperative instruction that specifies only the desired change to the input image. State the target region or element, the change (add/remove/replace/adjust), the magnitude or constraints, and preserve everything else. Example: 'Replace <X> with <Y> in <region>, match perspective and scale, preserve original lighting and colors elsewhere, keep background and composition unchanged.'\"\n};\n\nlet finalPrompt = prompts[config.prompt_template] || prompts.general;\nif (loraToken) {\n  finalPrompt = `IMPORTANT: Begin your description with the trigger token \"${loraToken}\". Then provide the rest of the description.\\n\\n${finalPrompt}`;\n}\n\nreturn {\n  images: images,\n  config: config,\n  prompt: finalPrompt,\n  lora_token: loraToken,\n  job_id: body.job_id || 'job_' + Date.now(),\n  started_at: new Date().toISOString()\n};"
+        "assignments": {
+          "assignments": [
+            {
+              "id": "directory_path",
+              "name": "directory_path",
+              "value": "D:/ai/scripts/n9n/test_images/post/subject_lora",
+              "type": "string"
+            },
+            {
+              "id": "lora_token",
+              "name": "lora_token",
+              "value": "sks",
+              "type": "string"
+            },
+            {
+              "id": "prompt_template",
+              "name": "prompt_template",
+              "value": "character",
+              "type": "string"
+            },
+            {
+              "id": "enable_refinement",
+              "name": "enable_refinement",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
       },
-      "id": "76285493-ff01-48e8-be61-0ef162eacc5f",
-      "name": "Setup",
+      "id": "form_input",
+      "name": "📝 Edit These Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [460, 400],
+      "notes": "CHANGE THESE VALUES BEFORE RUNNING:\n- directory_path: Your image folder\n- lora_token: Your trigger word (e.g., sks, ohwx)\n- prompt_template: character, object, style, general, scene\n- enable_refinement: true or false"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get input parameters and validate\nconst directoryPath = $input.item.json.directory_path;\nconst loraToken = $input.item.json.lora_token;\nconst promptTemplate = $input.item.json.prompt_template || 'character';\nconst enableRefinement = $input.item.json.enable_refinement || false;\n\nif (!directoryPath) {\n  throw new Error('directory_path is required. Edit the \"📝 Edit These Settings\" node.');\n}\n\nif (!loraToken) {\n  throw new Error('lora_token is required. Edit the \"📝 Edit These Settings\" node.');\n}\n\n// Validate LoRA token\nif (!/^[a-zA-Z0-9]{3,10}$/.test(loraToken)) {\n  throw new Error(`Invalid LoRA token format: \"${loraToken}\". Should be 3-10 alphanumeric characters`);\n}\n\nconst config = {\n  directory_path: directoryPath,\n  lora_token: loraToken,\n  prompt_template: promptTemplate,\n  detail_level: 'high',\n  enable_refinement: enableRefinement,\n  quality_threshold: 0.75\n};\n\nconst prompts = {\n  general: \"Provide a concise, objective description suitable for training. Describe what is visible: subjects present, key elements, composition/framing, lighting direction/quality/intensity, color palette, materials/textures, and any notable spatial context. Avoid brand names, identities, opinions, or narrative language.\",\n  object: \"Describe this image for object LoRA training. Focus on environment and optics: lighting direction/quality/intensity and shadows/reflections, camera–subject relationship (angle, distance, depth of field, framing), background context and support surfaces, and general color/material cues visible without naming or identifying the object specifically. Avoid brand names, unique labels, or subjective adjectives.\",\n  character: \"Describe this image for character LoRA training. Emphasize pose and positioning in space, lighting direction/quality/intensity and shadows, camera–subject relationship (angle, distance, focal-length feel, depth of field, framing), and surroundings. Do not list facial identity details or unique identifiers; avoid brand/style words.\",\n  style: \"Describe the overall scene succinctly, then the dominant color palette and the quality of light (direction, softness/hardness, contrast, time-of-day feel). Mention composition tendencies or rendering approach if evident (e.g., minimal, high-contrast, soft-gradation). End the caption with: 'in the style of {{STYLE}}'. Do not identify brands or subjects.\",\n  scene: \"Describe the setting and visible elements with attention to spatial layout and depth cues, composition/framing lines, lighting direction/quality/intensity, and palette. Include materials/textures of major surfaces. Avoid identities, brands, and subjective adjectives.\"\n};\n\nlet finalPrompt = prompts[promptTemplate] || prompts.general;\nif (loraToken) {\n  finalPrompt = `IMPORTANT: Begin your description with the trigger token \"${loraToken}\". Then provide the rest of the description.\\n\\n${finalPrompt}`;\n}\n\nreturn {\n  config: config,\n  prompt: finalPrompt,\n  job_id: 'job_' + Date.now(),\n  started_at: new Date().toISOString()\n};"
+      },
+      "id": "setup",
+      "name": "Setup Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        -1296,
-        336
-      ]
+      "position": [680, 400]
     },
     {
       "parameters": {
-        "fieldToSplitOut": "images",
-        "include": "allOtherFields",
+        "command": "=Get-ChildItem -Path \"{{ $json.config.directory_path }}\" -Filter *.jpg,*.jpeg,*.png,*.webp | Select-Object -ExpandProperty Name",
+        "description": "List all image files in directory (Windows PowerShell)"
+      },
+      "id": "list_images",
+      "name": "List Images (PowerShell)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split image filenames into individual items\nconst stdout = $input.item.json.stdout;\nconst directoryPath = $input.item.json.config.directory_path;\nconst config = $input.item.json.config;\nconst prompt = $input.item.json.prompt;\nconst jobId = $input.item.json.job_id;\n\nif (!stdout || stdout.trim() === '') {\n  throw new Error(`No images found in directory: ${directoryPath}\\n\\nMake sure the path exists and contains .jpg, .jpeg, .png, or .webp files.`);\n}\n\n// Handle both Unix and Windows line endings\nconst filenames = stdout.trim().split(/\\r?\\n/);\n\nreturn filenames.map((filename, idx) => {\n  const trimmedFilename = filename.trim();\n  // Use forward slashes for consistency (works on both platforms)\n  const filepath = `${directoryPath}/${trimmedFilename}`.replace(/\\\\/g, '/');\n  \n  return {\n    json: {\n      filename: trimmedFilename,\n      filepath: filepath,\n      image_id: trimmedFilename.replace(/\\.[^/.]+$/, ''), // Remove extension\n      config: config,\n      prompt: prompt,\n      job_id: jobId,\n      index: idx\n    }\n  };\n});"
+      },
+      "id": "prepare_batch",
+      "name": "Prepare Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.filepath }}",
         "options": {}
       },
-      "id": "ead90739-86d2-4741-9e46-34bd38afa8c8",
-      "name": "Split Out",
-      "type": "n8n-nodes-base.splitOut",
+      "id": "read_file",
+      "name": "Read Image File",
+      "type": "n8n-nodes-base.readBinaryFile",
       "typeVersion": 1,
-      "position": [
-        -1168,
-        336
-      ]
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convert binary to base64 data URI for OpenAI\nconst binaryData = $input.item.binary.data;\n\nif (!binaryData) {\n  throw new Error(`No binary data found for file: ${$input.item.json.filepath}`);\n}\n\nconst mimeType = binaryData.mimeType || 'image/jpeg';\nconst base64Data = binaryData.data;\n\n// Create data URI that OpenAI Vision accepts\nconst dataUri = `data:${mimeType};base64,${base64Data}`;\n\nreturn {\n  ...($input.item.json),\n  image_data_uri: dataUri\n};"
+      },
+      "id": "convert_base64",
+      "name": "Convert to Data URI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 400]
     },
     {
       "parameters": {
@@ -53,26 +111,19 @@
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "openAiApi",
         "sendBody": true,
-        "specifyBody": "={{\n  {\n    \"model\": \"gpt-4o\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": [\n          {\n            \"type\": \"text\",\n            \"text\": $json.prompt\n          },\n          {\n            \"type\": \"image_url\",\n            \"image_url\": {\n              \"url\": $json.images.url,\n              \"detail\": $json.config.detail_level\n            }\n          }\n        ]\n      }\n    ],\n    \"max_tokens\": 300\n  }\n}}",
-        "bodyParameters": {
-          "parameters": [
-            {}
-          ]
-        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"{{ $json.prompt }}\"\n      },\n      {\n        \"type\": \"image_url\",\n        \"image_url\": {\n          \"url\": \"{{ $json.image_data_uri }}\",\n          \"detail\": \"high\"\n        }\n      }\n    ]\n  }],\n  \"max_tokens\": 300\n}",
         "options": {}
       },
-      "id": "4295222a-6768-45b6-8dd7-456745eaffad",
-      "name": "Caption",
+      "id": "caption",
+      "name": "Caption Image",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        -848,
-        336
-      ],
+      "position": [1780, 400],
       "credentials": {
         "openAiApi": {
-          "id": "gaduVp1Hzh4TMdBZ",
-          "name": "OpenAi account (urban)"
+          "id": "fJGKuBBgTvFwAmPw",
+          "name": "OpenAi account 2"
         }
       },
       "continueOnFail": true
@@ -86,7 +137,7 @@
           },
           "conditions": [
             {
-              "leftValue": "={{ $('Setup').item.json.config.prompt_template }}",
+              "leftValue": "={{ $json.config.prompt_template }}",
               "rightValue": "object",
               "operator": {
                 "type": "string",
@@ -94,7 +145,7 @@
               }
             },
             {
-              "leftValue": "={{ $('Setup').item.json.config.prompt_template }}",
+              "leftValue": "={{ $json.config.prompt_template }}",
               "rightValue": "character",
               "operator": {
                 "type": "string",
@@ -103,17 +154,13 @@
             }
           ],
           "combinator": "or"
-        },
-        "options": {}
+        }
       },
-      "id": "75404a66-70c8-47b4-b8d4-bbbb3cd9ad46",
+      "id": "check_subject_removal",
       "name": "Check Subject Removal",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        -432,
-        336
-      ]
+      "position": [2000, 400]
     },
     {
       "parameters": {
@@ -123,100 +170,14 @@
         "nodeCredentialType": "openAiApi",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a caption editor for LoRA training datasets. Remove subject-specific identifying details while preserving visual descriptions of the scene, lighting, and composition.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $('Setup').item.json.config.lora_token ? 'LoRA trigger token: \\\"' + $('Setup').item.json.config.lora_token + '\\\" - This MUST be the first word of your output.\\n\\n' : '' }}Original caption: {{ $('Caption').item.json.choices[0].message.content }}\\n\\nRewrite this caption removing identifying details about the subject.{{ $('Setup').item.json.config.lora_token ? ' Start your caption with \\\"' + $('Setup').item.json.config.lora_token + '\\\" followed by the generic description.' : '' }}\\n\\nPreserve: pose, lighting, composition, scene elements.\\nRemove: names, identities, brands, specific locations.\"\n    }\n  ],\n  \"max_tokens\": 300\n}",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a caption editor for LoRA training datasets. Remove subject-specific identifying details while preserving visual descriptions of the scene, lighting, and composition.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.config.lora_token ? 'LoRA trigger token: \\\"' + $json.config.lora_token + '\\\" - This MUST be the first word of your output.\\n\\n' : '' }}Original caption: {{ $('Caption Image').item.json.choices[0].message.content }}\\n\\nRewrite this caption removing identifying details about the subject.{{ $json.config.lora_token ? ' Start your caption with \\\"' + $json.config.lora_token + '\\\" followed by the generic description.' : '' }}\\n\\nPreserve: pose, lighting, composition, scene elements.\\nRemove: names, identities, brands, specific locations.\"\n    }\n  ],\n  \"max_tokens\": 300\n}",
         "options": {}
       },
-      "id": "4db3e8b9-5f69-4d1b-830c-8bc263f85988",
+      "id": "remove_subject",
       "name": "Remove Subject Details",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        -432,
-        176
-      ],
-      "credentials": {
-        "openAiApi": {
-          "id": "gaduVp1Hzh4TMdBZ",
-          "name": "OpenAi account (urban)"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "// Process each caption individually\nconst input = $input.item.json;\n\n// Get split out data (available in current execution context)\nconst splitData = $('Split Out').item.json;\n\n// Get image info from Split Out\nconst imageId = splitData.id || input.image_id || 'unknown';\nconst filename = splitData.filename || input.filename || 'unknown';\n\n// Handle API failure\nif (input.error || !input.choices) {\n  return {\n    image_id: imageId,\n    filename: filename,\n    caption: null,\n    error: input.error?.message || 'API call failed',\n    success: false,\n    needs_refinement: false,\n    lora_token_valid: false\n  };\n}\n\n// Extract and score caption\nconst caption = input.choices[0].message.content.trim();\nconst words = caption.split(/\\s+/);\nconst wordCount = words.length;\n\n// Get config from Setup node\nconst setupData = $('Setup').item.json;\nconst config = setupData.config || {};\nconst expectedToken = config.lora_token;\n\n// ============================================\n// LORA TOKEN VALIDATION\n// ============================================\nlet loraTokenValid = true;\nlet loraTokenPosition = null;\nlet loraTokenIssue = null;\n\nif (expectedToken) {\n  const firstWord = words[0]?.toLowerCase();\n  const tokenMatch = firstWord === expectedToken.toLowerCase();\n  \n  if (!tokenMatch) {\n    loraTokenValid = false;\n    loraTokenIssue = `Expected LoRA token \"${expectedToken}\" at start, but caption starts with \"${words[0] || 'nothing'}\"`;\n  } else {\n    loraTokenPosition = 0;\n  }\n  \n  const tokenCount = caption.toLowerCase().split(expectedToken.toLowerCase()).length - 1;\n  if (tokenCount > 1) {\n    loraTokenIssue = `LoRA token \"${expectedToken}\" appears ${tokenCount} times (should appear once)`;\n  }\n} else {\n  loraTokenValid = true;\n}\n\n// ============================================\n// QUALITY CHECKS\n// ============================================\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= 200,\n  hasSubject: /\\b(person|character|figure|animal|object|subject)\\b/i.test(caption),\n  hasVisualDetails: /\\b(color|light|style|composition|texture|material)\\b/i.test(caption),\n  noErrors: !/\\b(error|unable|cannot|sorry)\\b/i.test(caption),\n  notTooVague: !/^(This is|The image shows|I see|Here is)/.test(caption),\n  hasLighting: /\\b(light|shadow|bright|dark|illuminated|backlit|glow)\\b/i.test(caption),\n  hasComposition: /\\b(foreground|background|center|positioned|angle|perspective|frame)\\b/i.test(caption),\n  loraTokenValid: expectedToken ? loraTokenValid : true\n};\n\nconst qualityScore = Object.values(checks).filter(Boolean).length / Object.keys(checks).length;\nconst needsRefinement = config.enable_refinement && qualityScore < (config.quality_threshold || 0.75);\n\nreturn {\n  image_id: imageId,\n  filename: filename,\n  caption: caption,\n  word_count: wordCount,\n  quality_score: Math.round(qualityScore * 100) / 100,\n  quality_checks: checks,\n  needs_refinement: needsRefinement,\n  success: true,\n  config: config,\n  lora_token: expectedToken || null,\n  lora_token_valid: loraTokenValid,\n  lora_token_position: loraTokenPosition,\n  lora_token_issue: loraTokenIssue\n};"
-      },
-      "id": "b900b651-8a46-4c6d-a082-0e7a211aebb7",
-      "name": "Score Quality",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -16,
-        352
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 1
-          },
-          "conditions": [
-            {
-              "leftValue": "={{ $json.needs_refinement }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "equals"
-              },
-              "id": "dc903b25-c9ef-4231-8090-fc1a202f02d9"
-            },
-            {
-              "leftValue": "={{ $json.success }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "equals"
-              },
-              "id": "7e50dbe3-3b51-4e47-8e04-c5e37e33bedc"
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "cea7fa7f-3fb0-47c1-9270-5d04207e5c30",
-      "name": "Check Refinement",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        224,
-        352
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "openAiApi",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Refine image captions to be more detailed and specific for AI training. Focus on concrete, objective visual details in natural language.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.config.lora_token ? 'CRITICAL: Keep \\\"' + $json.config.lora_token + '\\\" as the first word.\\n\\n' : '' }}Improve this caption with more concrete visual details about materials, textures, colors, lighting, and composition:\\n\\n{{ $json.caption }}\\n\\n{{ $json.config.lora_token ? 'Remember: \\\"' + $json.config.lora_token + '\\\" must remain the first word.' : '' }}\\n\\nAdd 20-30% more specific visual details.\"\n    }\n  ],\n  \"max_tokens\": 300\n}",
-        "options": {}
-      },
-      "id": "908d62ad-497b-4141-9994-a67cf79d830c",
-      "name": "Refine Caption",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        224,
-        176
-      ],
+      "position": [2220, 288],
       "credentials": {
         "openAiApi": {
           "id": "fJGKuBBgTvFwAmPw",
@@ -227,192 +188,175 @@
     },
     {
       "parameters": {
-        "jsCode": "// Process refinement and re-validate LoRA token\nconst input = $input.item.json;\nconst original = $node['Score Quality'].json;\n\nif (input.error || !input.choices) {\n  return {\n    ...original,\n    was_refined: false,\n    refinement_failed: true\n  };\n}\n\nconst refined = input.choices[0].message.content.trim();\nconst words = refined.split(/\\s+/);\nconst wordCount = words.length;\n\n// Re-validate LoRA token\nlet loraTokenValid = true;\nlet loraTokenIssue = null;\nconst expectedToken = original.lora_token;\n\nif (expectedToken) {\n  const firstWord = words[0]?.toLowerCase();\n  if (firstWord !== expectedToken.toLowerCase()) {\n    loraTokenValid = false;\n    loraTokenIssue = `Refinement lost LoRA token! Expected \"${expectedToken}\", got \"${words[0]}\"`;\n  }\n}\n\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= 200,\n  hasSubject: /\\b(person|character|animal|object)\\b/i.test(refined),\n  hasVisualDetails: /\\b(color|light|style|composition|texture|material)\\b/i.test(refined),\n  noErrors: !/\\b(error|unable)\\b/i.test(refined),\n  notTooVague: !/^(This is|The image)/.test(refined),\n  hasLighting: /\\b(light|shadow|bright|dark)\\b/i.test(refined),\n  hasComposition: /\\b(foreground|background|center|angle)\\b/i.test(refined),\n  loraTokenValid: expectedToken ? loraTokenValid : true\n};\n\nconst newScore = Object.values(checks).filter(Boolean).length / Object.keys(checks).length;\n\nreturn {\n  image_id: original.image_id,\n  filename: original.filename,\n  caption: refined,\n  word_count: wordCount,\n  quality_score: Math.round(newScore * 100) / 100,\n  quality_checks: checks,\n  was_refined: true,\n  original_quality: original.quality_score,\n  improvement: Math.round((newScore - original.quality_score) * 100) / 100,\n  success: true,\n  lora_token: expectedToken,\n  lora_token_valid: loraTokenValid,\n  lora_token_issue: loraTokenIssue\n};"
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Process each caption individually\nconst input = $input.item.json;\nconst imageId = input.image_id || 'unknown';\nconst filename = input.filename || 'unknown';\n\n// Handle API failure\nif (input.error || !input.choices) {\n  return {\n    image_id: imageId,\n    filename: filename,\n    filepath: input.filepath,\n    caption: null,\n    error: input.error?.message || 'API call failed',\n    success: false,\n    needs_refinement: false,\n    lora_token_valid: false\n  };\n}\n\n// Extract and score caption\nconst caption = input.choices[0].message.content.trim();\nconst words = caption.split(/\\s+/);\nconst wordCount = words.length;\n\n// Get config\nconst config = input.config || {};\nconst expectedToken = config.lora_token;\n\n// LoRA token validation\nlet loraTokenValid = true;\nlet loraTokenPosition = null;\nlet loraTokenIssue = null;\n\nif (expectedToken) {\n  const firstWord = words[0]?.toLowerCase();\n  const tokenMatch = firstWord === expectedToken.toLowerCase();\n  \n  if (!tokenMatch) {\n    loraTokenValid = false;\n    loraTokenIssue = `Expected LoRA token \"${expectedToken}\" at start, but caption starts with \"${words[0] || 'nothing'}\"`;\n  } else {\n    loraTokenPosition = 0;\n  }\n  \n  const tokenCount = caption.toLowerCase().split(expectedToken.toLowerCase()).length - 1;\n  if (tokenCount > 1) {\n    loraTokenIssue = `LoRA token \"${expectedToken}\" appears ${tokenCount} times (should appear once)`;\n  }\n} else {\n  loraTokenValid = true;\n}\n\n// Quality checks\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= 200,\n  hasSubject: /\\b(person|character|figure|animal|object|subject)\\b/i.test(caption),\n  hasVisualDetails: /\\b(color|light|style|composition|texture|material)\\b/i.test(caption),\n  noErrors: !/\\b(error|unable|cannot|sorry)\\b/i.test(caption),\n  notTooVague: !/^(This is|The image shows|I see|Here is)/.test(caption),\n  hasLighting: /\\b(light|shadow|bright|dark|illuminated|backlit|glow)\\b/i.test(caption),\n  hasComposition: /\\b(foreground|background|center|positioned|angle|perspective|frame)\\b/i.test(caption),\n  loraTokenValid: expectedToken ? loraTokenValid : true\n};\n\nconst qualityScore = Object.values(checks).filter(Boolean).length / Object.keys(checks).length;\nconst needsRefinement = config.enable_refinement && qualityScore < (config.quality_threshold || 0.75);\n\nreturn {\n  image_id: imageId,\n  filename: filename,\n  filepath: input.filepath,\n  caption: caption,\n  word_count: wordCount,\n  quality_score: Math.round(qualityScore * 100) / 100,\n  quality_checks: checks,\n  needs_refinement: needsRefinement,\n  success: true,\n  config: config,\n  lora_token: expectedToken || null,\n  lora_token_valid: loraTokenValid,\n  lora_token_position: loraTokenPosition,\n  lora_token_issue: loraTokenIssue\n};"
       },
-      "id": "13103304-9598-4371-aa05-58d0cc31c434",
+      "id": "score_quality",
+      "name": "Score Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needs_refinement }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check_refinement",
+      "name": "Check Refinement",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Refine image captions to be more detailed and specific for AI training. Focus on concrete, objective visual details.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.config.lora_token ? 'CRITICAL: Keep \\\"' + $json.config.lora_token + '\\\" as the first word.\\n\\n' : '' }}Improve this caption with more concrete visual details about materials, textures, colors, lighting, and composition:\\n\\n{{ $json.caption }}\\n\\n{{ $json.config.lora_token ? 'Remember: \\\"' + $json.config.lora_token + '\\\" must remain the first word.' : '' }}\\n\\nAdd 20-30% more specific visual details.\"\n    }\n  ],\n  \"max_tokens\": 300\n}",
+        "options": {}
+      },
+      "id": "refine",
+      "name": "Refine Caption",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2880, 288],
+      "credentials": {
+        "openAiApi": {
+          "id": "fJGKuBBgTvFwAmPw",
+          "name": "OpenAi account 2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process refinement\nconst input = $input.item.json;\nconst original = $node['Score Quality'].json;\n\nif (input.error || !input.choices) {\n  return {\n    ...original,\n    was_refined: false,\n    refinement_failed: true\n  };\n}\n\nconst refined = input.choices[0].message.content.trim();\nconst words = refined.split(/\\s+/);\nconst wordCount = words.length;\n\n// Re-validate LoRA token\nlet loraTokenValid = true;\nlet loraTokenIssue = null;\nconst expectedToken = original.lora_token;\n\nif (expectedToken) {\n  const firstWord = words[0]?.toLowerCase();\n  if (firstWord !== expectedToken.toLowerCase()) {\n    loraTokenValid = false;\n    loraTokenIssue = `Refinement lost LoRA token! Expected \"${expectedToken}\", got \"${words[0]}\"`;\n  }\n}\n\nconst checks = {\n  hasMinLength: wordCount >= 10,\n  hasMaxLength: wordCount <= 200,\n  hasSubject: /\\b(person|character|animal|object)\\b/i.test(refined),\n  hasVisualDetails: /\\b(color|light|style|composition|texture|material)\\b/i.test(refined),\n  noErrors: !/\\b(error|unable)\\b/i.test(refined),\n  notTooVague: !/^(This is|The image)/.test(refined),\n  hasLighting: /\\b(light|shadow|bright|dark)\\b/i.test(refined),\n  hasComposition: /\\b(foreground|background|center|angle)\\b/i.test(refined),\n  loraTokenValid: expectedToken ? loraTokenValid : true\n};\n\nconst newScore = Object.values(checks).filter(Boolean).length / Object.keys(checks).length;\n\nreturn {\n  image_id: original.image_id,\n  filename: original.filename,\n  filepath: original.filepath,\n  caption: refined,\n  word_count: wordCount,\n  quality_score: Math.round(newScore * 100) / 100,\n  quality_checks: checks,\n  was_refined: true,\n  original_quality: original.quality_score,\n  improvement: Math.round((newScore - original.quality_score) * 100) / 100,\n  success: true,\n  lora_token: expectedToken,\n  lora_token_valid: loraTokenValid,\n  lora_token_issue: loraTokenIssue\n};"
+      },
+      "id": "rescore",
       "name": "Rescore",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        576,
-        176
-      ]
+      "position": [3100, 288]
     },
     {
       "parameters": {
-        "jsCode": "// Aggregate all results\nconst allItems = $input.all();\nconst results = allItems.map(item => item.json);\n\nconst total = results.length;\nconst successful = results.filter(r => r.success).length;\nconst failed = results.filter(r => !r.success).length;\nconst refined = results.filter(r => r.was_refined).length;\n\nconst successfulResults = results.filter(r => r.success && r.caption);\nconst avgScore = successfulResults.length > 0\n  ? successfulResults.reduce((s, r) => s + r.quality_score, 0) / successfulResults.length\n  : 0;\nconst avgWords = successfulResults.length > 0\n  ? successfulResults.reduce((s, r) => s + r.word_count, 0) / successfulResults.length\n  : 0;\n\n// LoRA token summary\nconst loraResults = results.filter(r => r.lora_token);\nconst loraTokensValid = loraResults.filter(r => r.lora_token_valid).length;\nconst loraTokensInvalid = loraResults.filter(r => !r.lora_token_valid).length;\nconst loraIssues = results\n  .filter(r => r.lora_token_issue)\n  .map(r => ({ image_id: r.image_id, issue: r.lora_token_issue }));\n\nconst formatted = results.map(r => ({\n  image_id: r.image_id,\n  filename: r.filename,\n  caption: r.caption,\n  success: r.success,\n  word_count: r.word_count,\n  quality_score: r.quality_score,\n  was_refined: r.was_refined || false,\n  improvement: r.improvement || 0,\n  error: r.error,\n  lora_token: r.lora_token || null,\n  lora_token_valid: r.lora_token_valid || false,\n  lora_token_issue: r.lora_token_issue || null\n}));\n\nconst jobId = $node['Setup'].json.job_id;\nconst startedAt = $node['Setup'].json.started_at;\nconst completedAt = new Date().toISOString();\n\nreturn {\n  job_id: jobId,\n  status: 'completed',\n  processing_time: {\n    started_at: startedAt,\n    completed_at: completedAt,\n    duration_seconds: Math.round((new Date(completedAt) - new Date(startedAt)) / 1000)\n  },\n  results: formatted,\n  summary: {\n    total_images: total,\n    successful: successful,\n    failed: failed,\n    refined_count: refined,\n    avg_quality_score: Math.round(avgScore * 100) / 100,\n    avg_word_count: Math.round(avgWords),\n    lora_tokens_expected: loraResults.length,\n    lora_tokens_valid: loraTokensValid,\n    lora_tokens_invalid: loraTokensInvalid,\n    lora_issues: loraIssues\n  },\n  metadata: {\n    workflow_version: 'v3.0',\n    model: 'gpt-4o',\n    config: $node['Setup'].json.config\n  }\n};"
+        "jsCode": "// Save caption as .txt file next to image\nconst data = $input.item.json;\nconst filepath = data.filepath;\nconst caption = data.caption;\n\nif (!caption) {\n  return data; // Skip if no caption\n}\n\n// Create .txt filename (replace image extension with .txt)\nconst txtPath = filepath.replace(/\\.[^/.]+$/, '.txt');\n\nreturn {\n  ...data,\n  txt_path: txtPath,\n  txt_content: caption\n};"
       },
-      "id": "0644dfa4-7968-4085-ba80-a1fae70d385e",
-      "name": "Aggregate Results",
+      "id": "prepare_txt",
+      "name": "Prepare Text File",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        896,
-        368
-      ]
+      "position": [3320, 400]
     },
     {
       "parameters": {
-        "respondWith": "allIncomingItems",
+        "operation": "write",
+        "fileName": "={{ $json.txt_path }}",
+        "data": "={{ $json.txt_content }}",
         "options": {}
       },
-      "id": "b445b73b-ecdd-4b7f-8e9e-ae0b8238ae7c",
-      "name": "Respond",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        1120,
-        368
-      ]
+      "id": "write_txt",
+      "name": "Write Caption File",
+      "type": "n8n-nodes-base.writeFile",
+      "typeVersion": 1,
+      "position": [3540, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results\nconst allItems = $input.all();\nconst results = allItems.map(item => item.json);\n\nconst total = results.length;\nconst successful = results.filter(r => r.success).length;\nconst failed = results.filter(r => !r.success).length;\nconst refined = results.filter(r => r.was_refined).length;\n\nconst successfulResults = results.filter(r => r.success && r.caption);\nconst avgScore = successfulResults.length > 0\n  ? successfulResults.reduce((s, r) => s + r.quality_score, 0) / successfulResults.length\n  : 0;\nconst avgWords = successfulResults.length > 0\n  ? successfulResults.reduce((s, r) => s + r.word_count, 0) / successfulResults.length\n  : 0;\n\nconst loraResults = results.filter(r => r.lora_token);\nconst loraTokensValid = loraResults.filter(r => r.lora_token_valid).length;\nconst loraTokensInvalid = loraResults.filter(r => !r.lora_token_valid).length;\nconst loraIssues = results\n  .filter(r => r.lora_token_issue)\n  .map(r => ({ image_id: r.image_id, issue: r.lora_token_issue }));\n\nconst formatted = results.map(r => ({\n  image_id: r.image_id,\n  filename: r.filename,\n  caption: r.caption,\n  success: r.success,\n  word_count: r.word_count,\n  quality_score: r.quality_score,\n  was_refined: r.was_refined || false,\n  improvement: r.improvement || 0,\n  error: r.error,\n  lora_token: r.lora_token || null,\n  lora_token_valid: r.lora_token_valid || false,\n  lora_token_issue: r.lora_token_issue || null\n}));\n\nconst jobId = results[0]?.job_id || 'unknown';\nconst startedAt = results[0]?.config?.started_at || new Date().toISOString();\nconst completedAt = new Date().toISOString();\n\nreturn {\n  job_id: jobId,\n  status: 'completed',\n  processing_time: {\n    started_at: startedAt,\n    completed_at: completedAt,\n    duration_seconds: Math.round((new Date(completedAt) - new Date(startedAt)) / 1000)\n  },\n  results: formatted,\n  summary: {\n    total_images: total,\n    successful: successful,\n    failed: failed,\n    refined_count: refined,\n    avg_quality_score: Math.round(avgScore * 100) / 100,\n    avg_word_count: Math.round(avgWords),\n    lora_tokens_expected: loraResults.length,\n    lora_tokens_valid: loraTokensValid,\n    lora_tokens_invalid: loraTokensInvalid,\n    lora_issues: loraIssues\n  },\n  metadata: {\n    workflow_version: 'v4.0-local-windows',\n    model: 'gpt-4o',\n    directory: results[0]?.config?.directory_path || 'unknown'\n  }\n};"
+      },
+      "id": "aggregate",
+      "name": "📊 Summary Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3760, 400]
     }
   ],
-  "pinData": {},
   "connections": {
-    "Webhook": {
-      "main": [
-        [
-          {
-            "node": "Setup",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "When clicking \"Test workflow\"": {
+      "main": [[{"node": "📝 Edit These Settings", "type": "main", "index": 0}]]
     },
-    "Setup": {
-      "main": [
-        [
-          {
-            "node": "Split Out",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "📝 Edit These Settings": {
+      "main": [[{"node": "Setup Config", "type": "main", "index": 0}]]
     },
-    "Split Out": {
-      "main": [
-        [
-          {
-            "node": "Caption",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Setup Config": {
+      "main": [[{"node": "List Images (PowerShell)", "type": "main", "index": 0}]]
     },
-    "Caption": {
-      "main": [
-        [
-          {
-            "node": "Check Subject Removal",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "List Images (PowerShell)": {
+      "main": [[{"node": "Prepare Batch", "type": "main", "index": 0}]]
+    },
+    "Prepare Batch": {
+      "main": [[{"node": "Read Image File", "type": "main", "index": 0}]]
+    },
+    "Read Image File": {
+      "main": [[{"node": "Convert to Data URI", "type": "main", "index": 0}]]
+    },
+    "Convert to Data URI": {
+      "main": [[{"node": "Caption Image", "type": "main", "index": 0}]]
+    },
+    "Caption Image": {
+      "main": [[{"node": "Check Subject Removal", "type": "main", "index": 0}]]
     },
     "Check Subject Removal": {
       "main": [
-        [
-          {
-            "node": "Remove Subject Details",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Score Quality",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "Remove Subject Details", "type": "main", "index": 0}],
+        [{"node": "Score Quality", "type": "main", "index": 0}]
       ]
     },
     "Remove Subject Details": {
-      "main": [
-        [
-          {
-            "node": "Score Quality",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{"node": "Score Quality", "type": "main", "index": 0}]]
     },
     "Score Quality": {
-      "main": [
-        [
-          {
-            "node": "Check Refinement",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{"node": "Check Refinement", "type": "main", "index": 0}]]
     },
     "Check Refinement": {
       "main": [
-        [
-          {
-            "node": "Refine Caption",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Aggregate Results",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{"node": "Refine Caption", "type": "main", "index": 0}],
+        [{"node": "Prepare Text File", "type": "main", "index": 0}]
       ]
     },
     "Refine Caption": {
-      "main": [
-        [
-          {
-            "node": "Rescore",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{"node": "Rescore", "type": "main", "index": 0}]]
     },
     "Rescore": {
-      "main": [
-        [
-          {
-            "node": "Aggregate Results",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{"node": "Prepare Text File", "type": "main", "index": 0}]]
     },
-    "Aggregate Results": {
-      "main": [
-        [
-          {
-            "node": "Respond",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Prepare Text File": {
+      "main": [[{"node": "Write Caption File", "type": "main", "index": 0}]]
+    },
+    "Write Caption File": {
+      "main": [[{"node": "📊 Summary Report", "type": "main", "index": 0}]]
     }
   },
-  "active": true,
+  "active": false,
   "settings": {
     "executionOrder": "v1"
-  },
-  "versionId": "bd728f29-1b20-45ec-8f38-34bc10bd6d01",
-  "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "06e0f62863e5957a86605e79dd77faff94e6cb9fa3631fea2f3e73167fda3f87"
-  },
-  "id": "TSXwsjJ9ByZaLO3V",
-  "tags": []
+  }
 }

@@ -1,0 +1,19 @@
+Airtable Form Submission
+    ↓
+Workflow 1: Path Normalizer & File Sync
+    ↓
+Workflow 2: Image Preprocessor
+    ↓
+Workflow 3: Image Captioner
+    ↓
+Workflow 4: Config Generator
+    ↓
+Workflow 5: Package & Upload to Backblaze
+    ↓
+Workflow 6: Launch RunPod Serverless Training
+    ↓
+Workflow 7: Monitor Training (WandB)
+    ↓
+Workflow 8: Post-Training Analysis (VLM)
+    ↓
+Workflow 9: Slack Notification with Results
