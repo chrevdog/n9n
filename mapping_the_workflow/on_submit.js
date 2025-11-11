@@ -1,813 +1,1158 @@
-// n8n Workflow triggered via Airtable webhook
+🎯 COMPLETE LoRA Training Pipeline Guide
+Architecture Overview
+Airtable Form Submit
+    ↓
+Job Intake & Validation
+    ↓
+Workflow 1: Path Normalizer & Dataset Inspector
+    ↓
+    ├─ IF needs_preprocessing → Workflow 2: Image Preprocessor
+    │                              ↓
+    └─ ELSE ────────────────────→ Workflow 3: Image Captioner
+                                      ↓
+                                 Workflow 4: Config Generator
+                                      ↓
+                                 Workflow 5: Upload to Backblaze
+                                      ↓
+                                 Workflow 6: Launch RunPod Training
+                                      ↓
+                                 Workflow 7: Monitor Training (WandB)
+                                      ↓
+                                 Workflow 8: Post-Training Analysis (VLM)
+                                      ↓
+                                 Workflow 9: Slack Notification
 
-1. Create Job Record
-   - job_id = "job_" + timestamp
+📋 Airtable Form Configuration
+Form Fields (User-Facing):
+Required Fields:
+├─ dataset_path (long text)
+│  └─ Placeholder: "D:/photos/bottles" or "//server/share/images"
+├─ lora_token (text, default: "sks_fragrancebottle")
+│  └─ Description: "Trigger word for your LoRA (3-10 alphanumeric characters)"
+├─ model_base (single select)
+│  └─ Options: SDXL, SD1.5, Flux, flux_kontext, wan22, hunyuan, qwen_image
+└─ training_type (single select)
+   └─ Options: character, object, style, scene, motion_lora
+
+Optional Advanced Fields:
+├─ custom_config (long text, JSON format)
+│  └─ Description: "Advanced: Override config template with custom JSON"
+└─ validation_prompts (long text)
+   └─ Description: "One prompt per line for validation images"
+   └─ Placeholder: "sks_fragrancebottle on marble counter\nsks_fragrancebottle in natural light"
+Backend Fields (Auto-Populated by Workflows):
+Job Tracking:
+├─ job_id (formula: "job_" & CREATED_TIME())
+├─ created_at (created time)
+├─ updated_at (last modified time)
+└─ status (single select)
+   Options: pending, validated, preprocessing, preprocessed, 
+            captioning, captioned, config_ready, uploaded, 
+            training, training_complete, analyzing, complete, failed
+
+Path Management:
+├─ normalized_path (text)
+├─ processed_dir (text)
+└─ upload_dir (text)
+
+Dataset Info:
+├─ image_count (number)
+├─ total_size_mb (number)
+├─ needs_preprocessing (checkbox)
+└─ needs_captioning (checkbox)
+
+Processing Reports (JSON):
+├─ inspection_report (long text)
+├─ preprocessing_report (long text)
+└─ captioning_report (long text)
+
+Captioning Progress:
+├─ captioning_progress (percent)
+├─ captions_completed (number)
+└─ caption_accuracy (percent)
+
+Cloud Storage:
+├─ backblaze_dataset_url (URL)
+├─ backblaze_config_url (URL)
+├─ backblaze_output_url (URL)
+└─ upload_complete_at (date)
+
+Training:
+├─ runpod_job_id (text)
+├─ wandb_url (URL)
+├─ training_started_at (date)
+├─ training_completed_at (date)
+├─ training_progress (percent)
+├─ current_step (text, e.g. "1250/2776")
+├─ current_loss (number)
+└─ eta (text, e.g. "1h 15m")
+
+Results:
+├─ best_model_url (URL)
+├─ best_model_score (number)
+└─ analysis_report_url (URL)
+
+Costs:
+├─ estimated_cost (currency, USD)
+├─ actual_cost (currency, USD)
+└─ captioning_cost (currency, USD)
+
+Error Handling:
+├─ error_log (long text)
+└─ retry_count (number, default: 0)
+
+🚀 Workflow 0: Job Intake & Validation
+Trigger: Airtable webhook on form submission
+javascript// n8n Workflow: "0_Job_Intake"
+
+1. Receive Webhook from Airtable
+   const formData = $input.item.json;
+   
+2. Generate job_id
+   // Airtable formula already created this
+   job_id = formData.job_id;
+   
+3. Validate Required Fields
+   if (!formData.dataset_path) {
+     throw new Error("Dataset path is required");
+   }
+   
+   if (!formData.lora_token) {
+     // Set default
+     lora_token = "sks_fragrancebottle";
+   } else {
+     lora_token = formData.lora_token;
+     // Validate format
+     if (!/^[a-zA-Z0-9]{3,10}$/.test(lora_token)) {
+       throw new Error("LoRA token must be 3-10 alphanumeric characters");
+     }
+   }
+   
+   if (!formData.model_base) {
+     throw new Error("Model type is required");
+   }
+   
+   if (!formData.training_type) {
+     training_type = "object"; // Default
+   } else {
+     training_type = formData.training_type;
+   }
+
+4. Initialize Job
+   UPDATE Airtable record:
    - status = "pending"
-   - created_at = now()
-   - All form fields copied to record
-
-2. Validate Input
-   IF !dataset_path:
-     → Error: "Dataset path required"
-   IF !lora_token:
-     → Set default: "sks_fragrancebottle"
-   IF !model_base:
-     → Error: "Model type required"
-   IF !training_type:
-     → Set default: "object"
-
-3. Initialize Processing Flags
-   - needs_preprocessing = null  // Will detect
-   - needs_captioning = null     // Will detect
-   - config_source = custom_config ? "custom" : "template"
-
-4. Send Slack Notification
-   Channel: #lora-training-bot (general channel)
-   Message: "🚀 New training job started: [job_id]
-            LoRA Token: [lora_token]
-            Model: [model_base]
-            Status: Downloading dataset..."
-
-5. Trigger Workflow 1: Path Normalizer
-```
-
----
-
-## **Workflow 1: Path Normalizer & Dataset Inspector**
-
-**Purpose:** Download files + detect if preprocessing/captioning needed
-```
-INPUT: dataset_path from Airtable
-OUTPUT: Validated path + detection flags
-
-1. Normalize Path Format
-   # Just convert to consistent format, DON'T copy files
+   - lora_token = lora_token (if was default)
+   - training_type = training_type (if was default)
+   - estimated_cost = 2.70 (initial estimate)
    
-   path = dataset_path
-   
-   # Convert Windows backslashes to forward slashes
-   if "\\" in path:
-       normalized_path = path.replace("\\", "/")
-   else:
-       normalized_path = path
-   
-   # That's it! Keep working with files in place.
-
-2. Validate Files Exist
-   import os
-   from pathlib import Path
-   
-   source = Path(normalized_path)
-   
-   if not source.exists():
-       → Error: "Path does not exist"
-   
-   # Count images
-   image_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
-   image_files = [
-       f for f in source.rglob('*') 
-       if f.suffix.lower() in image_extensions
-   ]
-   
-   image_count = len(image_files)
-   
-   if image_count < 4:
-       → Error: "Minimum 4 images required"
-
-3. Inspect Dataset (sample, don't copy)
-   # Sample 10 random images IN PLACE
-   sample = random.sample(image_files, min(10, image_count))
-   
-   resolutions = []
-   has_txt_count = 0
-   
-   for img_path in sample:
-       # Read directly from source path
-       img = Image.open(img_path)
-       resolutions.append((img.width, img.height))
-       
-       # Check for caption file
-       txt_path = img_path.with_suffix('.txt')
-       if txt_path.exists():
-           has_txt_count += 1
-   
-   # Detect preprocessing/captioning needs
-   needs_preprocessing = (resolution analysis)
-   needs_captioning = (has_txt_count < 8)
-
-4. Update Airtable
-   - normalized_path = normalized_path  // Just the clean path
-   - image_count = image_count
-   - needs_preprocessing = needs_preprocessing
-   - needs_captioning = needs_captioning
-   - status = "validated"
-
-5. Route to Next Step
-   if needs_preprocessing:
-       → Trigger Workflow 2 (works on normalized_path)
-   elif needs_captioning:
-       → Trigger Workflow 3 (works on normalized_path)
-   else:
-       → Trigger Workflow 4
-       
-4. Validate Files
-   files = []
-   for file in os.listdir(raw_dir):
-       if file.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-           files.append(file)
-   
-   image_count = len(files)
-   
-   IF image_count < 4:
-     → Error: "Minimum 4 images required"
-   IF image_count > 10000:
-     → Error: "Maximum 10,000 images exceeded"
-   
-   # Calculate size
-   total_size_bytes = sum(os.path.getsize(f"{raw_dir}/{f}") for f in files)
-   total_size_mb = total_size_bytes / (1024 * 1024)
-
-5. Inspect Dataset (Detect preprocessing status)
-   
-   # Sample 10 random images
-   sample = random.sample(files, min(10, image_count))
-   
-   resolutions = []
-   has_txt_files = 0
-   
-   for img_file in sample:
-       # Check resolution
-       img = Image.open(f"{raw_dir}/{img_file}")
-       width, height = img.size
-       resolutions.append((width, height))
-       
-       # Check for caption file
-       txt_file = img_file.rsplit('.', 1)[0] + '.txt'
-       if os.path.exists(f"{raw_dir}/{txt_file}"):
-           has_txt_files += 1
-   
-   # Analyze
-   unique_resolutions = len(set(resolutions))
-   avg_width = sum(r[0] for r in resolutions) / len(resolutions)
-   avg_height = sum(r[1] for r in resolutions) / len(resolutions)
-   
-   # DETECTION LOGIC
-   needs_preprocessing = True  # Default
-   needs_captioning = True     # Default
-   
-   # Check if already processed
-   IF unique_resolutions == 1 AND avg_width in [512, 768, 1024]:
-     needs_preprocessing = False
-     reason = "All images same target resolution"
-   
-   # Check if already captioned
-   caption_coverage = has_txt_files / len(sample)
-   IF caption_coverage > 0.8:
-     needs_captioning = False
-     # Verify LoRA token present
-     sample_caption = open(f"{raw_dir}/{sample[0].rsplit('.', 1)[0]}.txt").read()
-     if lora_token.lower() not in sample_caption.lower():
-       needs_captioning = True  # Re-caption to add token
-       reason = "Captions missing LoRA token"
-
-6. Update Path in Airtable
-   # Normalize path for later reference
-   normalized_path = job_dir
-   
-   UPDATE Airtable:
-   - normalized_dataset_path = normalized_path
-   - raw_directory = raw_dir
-   - image_count = image_count
-   - total_size_mb = total_size_mb
-   - needs_preprocessing = needs_preprocessing
-   - needs_captioning = needs_captioning
-   - status = "downloaded"
-
-7. Generate Inspection Report
-   inspection_report = {
-     "image_count": image_count,
-     "total_size_mb": total_size_mb,
-     "sample_resolutions": resolutions,
-     "unique_resolutions": unique_resolutions,
-     "caption_coverage": caption_coverage,
-     "needs_preprocessing": needs_preprocessing,
-     "needs_captioning": needs_captioning,
-     "detection_reason": reason
-   }
-   
-   Save to: {job_dir}/reports/inspection_report.json
-
-8. Decision Tree - Route to Next Workflow
-   IF needs_preprocessing:
-     → Trigger Workflow 2: Image Preprocessor
-   ELIF needs_captioning:
-     → Trigger Workflow 3: Image Captioner
-   ELSE:
-     → Trigger Workflow 4: Config Generator
-```
-
----
-
-## **Workflow 2: Image Preprocessor (Simplified)**
-```
-INPUT: {job_dir}/raw/
-OUTPUT: {job_dir}/processed/
-
-1. Load Config
-   model_base = from Airtable
-   
-   # Target resolution based on model
-   target_res = {
-     "SD1.5": 512,
-     "SDXL": 1024,
-     "Flux": 1024,
-     "flux_kontext": 1024,
-     "wan22": 512,
-     "hunyuan": 1024,
-     "qwen_image": 1024
-   }[model_base]
-
-2. Analyze for Aspect Bucketing
-   aspect_ratios = []
-   for img_file in os.listdir(f"{job_dir}/raw/"):
-       img = Image.open(f"{job_dir}/raw/{img_file}")
-       ratio = img.width / img.height
-       aspect_ratios.append(ratio)
-   
-   variance = np.std(aspect_ratios)
-   
-   IF variance > 0.3:
-     use_buckets = True
-     buckets = generate_buckets(target_res)
-     # e.g., [512x512, 512x768, 768x512] for SD1.5
-     #       [1024x1024, 1024x1536, 1536x1024] for SDXL
-   ELSE:
-     use_buckets = False
-     buckets = [f"{target_res}x{target_res}"]
-
-3. Process Images
-   from PIL import Image, ImageFilter
-   
-   for img_file in os.listdir(f"{job_dir}/raw/"):
-       img = Image.open(f"{job_dir}/raw/{img_file}")
-       
-       # Auto-crop (center crop + smart crop for faces)
-       img = smart_crop(img, target_res)
-       
-       # Determine bucket
-       if use_buckets:
-           bucket = assign_to_bucket(img, buckets)
-       else:
-           bucket = buckets[0]
-       
-       # Resize
-       bucket_w, bucket_h = map(int, bucket.split('x'))
-       img_resized = img.resize((bucket_w, bucket_h), Image.LANCZOS)
-       
-       # Save as PNG
-       output_dir = f"{job_dir}/processed/{bucket}"
-       os.makedirs(output_dir, exist_ok=True)
-       output_path = f"{output_dir}/{img_file.rsplit('.', 1)[0]}.png"
-       img_resized.save(output_path, "PNG", optimize=True)
-
-4. Quality Check
-   processed_count = sum(
-       len(files) for _, _, files in os.walk(f"{job_dir}/processed/")
-   )
-   
-   IF processed_count != image_count:
-     → Error: "Processing failed"
-
-5. Generate Report
-   preprocessing_report = {
-     "original_count": image_count,
-     "processed_count": processed_count,
-     "buckets": {
-       bucket: len(os.listdir(f"{job_dir}/processed/{bucket}"))
-       for bucket in buckets
-     },
-     "target_resolution": target_res,
-     "used_aspect_bucketing": use_buckets
-   }
-   
-   Save to: {job_dir}/reports/preprocessing_report.json
-
-6. Update Airtable
-   - processed_directory = f"{job_dir}/processed/"
-   - processed_image_count = processed_count
-   - preprocessing_report = preprocessing_report
-   - status = "preprocessed"
-
-7. Trigger Workflow 3: Image Captioner
-```
-
----
-
-## **Workflow 3: Image Captioner (Production Ready)**
-```
-INPUT: {job_dir}/processed/ (or /raw/ if preprocessing skipped)
-OUTPUT: .txt files next to each image
-
-1. Determine Input Directory
-   IF needs_preprocessing was True:
-     input_dir = f"{job_dir}/processed/"
-   ELSE:
-     input_dir = f"{job_dir}/raw/"
-
-2. Load All Images
-   image_files = []
-   for root, dirs, files in os.walk(input_dir):
-       for file in files:
-           if file.endswith(('.png', '.jpg', '.jpeg', '.webp')):
-               image_files.append(os.path.join(root, file))
-   
-   total_images = len(image_files)
-
-3. Load Prompt Template
-   training_type = from Airtable
-   model_base = from Airtable
-   lora_token = from Airtable
-   
-   # Use your existing prompt templates
-   prompts = {
-     "character": "Describe this image for character LoRA training...",
-     "object": "Describe this image for object LoRA training...",
-     "style": "Describe the style...",
-     "scene": "Describe the setting...",
-     "motion_lora": "Describe the motion and action..."
-   }
-   
-   base_prompt = prompts[training_type]
-   final_prompt = f"IMPORTANT: Begin with '{lora_token}'. {base_prompt}"
-
-4. Batch Processing (Smart Rate Limiting)
-   from openai import OpenAI
-   import base64
-   
-   client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
-   
-   batch_size = 50
-   batches = [image_files[i:i+batch_size] for i in range(0, len(image_files), batch_size)]
-   
-   completed = 0
-   failed = []
-   
-   for batch in batches:
-       results = []
-       
-       # Process batch in parallel
-       for img_path in batch:
-           try:
-               # Read and encode image
-               with open(img_path, 'rb') as f:
-                   img_data = base64.b64encode(f.read()).decode()
-               
-               # Determine mime type
-               ext = img_path.split('.')[-1].lower()
-               mime = f"image/{ext}" if ext != 'jpg' else "image/jpeg"
-               data_uri = f"data:{mime};base64,{img_data}"
-               
-               # Call OpenAI
-               response = client.chat.completions.create(
-                   model="gpt-4o",
-                   messages=[{
-                       "role": "user",
-                       "content": [
-                           {"type": "text", "text": final_prompt},
-                           {"type": "image_url", "image_url": {"url": data_uri, "detail": "high"}}
-                       ]
-                   }],
-                   max_tokens=300
-               )
-               
-               caption = response.choices[0].message.content.strip()
-               results.append((img_path, caption, True))
-               
-           except Exception as e:
-               results.append((img_path, str(e), False))
-               failed.append(img_path)
-       
-       # Save after each batch
-       for img_path, caption, success in results:
-           if success:
-               txt_path = img_path.rsplit('.', 1)[0] + '.txt'
-               with open(txt_path, 'w') as f:
-                   f.write(caption)
-               completed += 1
-       
-       # Rate limit buffer
-       time.sleep(6)
-       
-       # Update progress in Airtable
-       progress_pct = (completed / total_images) * 100
-       UPDATE Airtable:
-       - captioning_progress = progress_pct
-       - captions_completed = completed
-
-5. Quality Validation
-   # Check LoRA token presence
-   token_accuracy = 0
-   caption_lengths = []
-   
-   for img_path in image_files:
-       txt_path = img_path.rsplit('.', 1)[0] + '.txt'
-       if os.path.exists(txt_path):
-           with open(txt_path) as f:
-               caption = f.read()
-               caption_lengths.append(len(caption.split()))
-               if lora_token.lower() in caption.lower():
-                   token_accuracy += 1
-   
-   token_accuracy_pct = token_accuracy / total_images
-
-6. Generate Report
-   captioning_report = {
-     "total_images": total_images,
-     "successful": completed,
-     "failed": len(failed),
-     "lora_token_accuracy": token_accuracy_pct,
-     "avg_caption_length": sum(caption_lengths) / len(caption_lengths),
-     "failed_files": failed
-   }
-   
-   Save to: {job_dir}/reports/captioning_report.json
-
-7. Update Airtable
-   - captioning_report = captioning_report
-   - captions_completed = completed
-   - caption_accuracy = token_accuracy_pct
-   - status = "captioned"
-
-8. Trigger Workflow 4: Config Generator
-```
-
----
-
-## **Workflow 4: Config Generator (Template-Based)**
-```
-INPUT: Dataset metadata + Optional custom_config
-OUTPUT: Training config files
-
-1. Load Template
-   model_base = from Airtable
-   training_type = from Airtable
-   custom_config = from Airtable (if provided)
-   
-   # Your pre-tested templates
-   template_path = f"/templates/{model_base}_{training_type}_config.json"
-   config_template = load_json(template_path)
-   
-   # Example: /templates/SDXL_object_config.json
-
-2. Merge Custom Config (if provided)
-   IF custom_config:
-     config = {**config_template, **json.loads(custom_config)}
-   ELSE:
-     config = config_template
-
-3. Fill Dynamic Values
-   config["instance_prompt"] = lora_token
-   config["output_dir"] = f"/output/{job_id}"
-   
-   # Get image count and buckets
-   processed_dir = from Airtable
-   image_count = count_images(processed_dir)
-   buckets = list_subdirectories(processed_dir)
-   
-   # Update paths
-   config["data_backend_config"] = {
-     "datasets": [
+5. Send Slack Notification
+   POST to Slack webhook:
+   {
+     "channel": "#lora-training-bot",
+     "text": "🚀 New training job started",
+     "blocks": [
        {
-         "id": bucket,
-         "instance_data_dir": f"/dataset/{bucket}",
-         "resolution": int(bucket.split('x')[0])
+         "type": "section",
+         "text": {
+           "type": "mrkdwn",
+           "text": `*Job ID:* ${job_id}\n*LoRA Token:* ${lora_token}\n*Model:* ${formData.model_base}\n*Type:* ${training_type}\n*Status:* Validating dataset...`
+         }
        }
-       for bucket in buckets
      ]
    }
 
-4. Generate Validation Prompts
-   validation_prompts = from Airtable
-   
-   IF !validation_prompts:
-     # Auto-generate from common caption patterns
-     sample_captions = []
-     for txt_file in glob(f"{processed_dir}/**/*.txt"):
-         with open(txt_file) as f:
-             sample_captions.append(f.read())
-     
-     # Extract common phrases
-     prompts = generate_prompts_from_captions(sample_captions, lora_token)
-     # e.g., ["sks_fragrancebottle on table", "sks_fragrancebottle close-up"]
-   ELSE:
-     prompts = validation_prompts.split('\n')
-   
-   config["validation_prompt"] = prompts
+6. Trigger Workflow 1
+   // Call webhook for next workflow
+   POST to n8n webhook:
+   {
+     "job_id": job_id,
+     "dataset_path": formData.dataset_path,
+     "lora_token": lora_token,
+     "model_base": formData.model_base,
+     "training_type": training_type,
+     "custom_config": formData.custom_config,
+     "validation_prompts": formData.validation_prompts
+   }
 
-5. Generate WandB Config
-   config["report_to"] = "wandb"
-   config["logging_dir"] = f"/logs/{job_id}"
+🔍 Workflow 1: Path Normalizer & Dataset Inspector
+Purpose: Validate dataset, detect preprocessing/captioning needs
+python# n8n Workflow: "1_Path_Normalizer"
+# Language: Python (Code node)
 
-6. Save Config Files
-   config_dir = f"{job_dir}/configs/"
-   os.makedirs(config_dir, exist_ok=True)
-   
-   # Main config
-   with open(f"{config_dir}/config.json", 'w') as f:
-       json.dump(config, f, indent=2)
-   
-   # Multidatabackend
-   with open(f"{config_dir}/multidatabackend.json", 'w') as f:
-       json.dump(config["data_backend_config"], f, indent=2)
-   
-   # User prompt library
-   with open(f"{config_dir}/user_prompt_library.json", 'w') as f:
-       json.dump({"prompts": prompts}, f, indent=2)
+import os
+import random
+from pathlib import Path
+from PIL import Image
+import json
 
-7. Update Airtable
-   - config_dir = config_dir
-   - config_source = "custom" if custom_config else "template"
-   - status = "config_ready"
+# INPUT from previous workflow
+job_id = $input.item.json.job_id
+dataset_path = $input.item.json.dataset_path
+lora_token = $input.item.json.lora_token
+model_base = $input.item.json.model_base
+training_type = $input.item.json.training_type
 
-8. Trigger Workflow 5: Upload to Backblaze
+# ===================================
+# 1. NORMALIZE PATH FORMAT
+# ===================================
+# Convert Windows backslashes to forward slashes
+if "\\" in dataset_path:
+    normalized_path = dataset_path.replace("\\", "/")
+else:
+    normalized_path = dataset_path
+
+# ===================================
+# 2. VALIDATE PATH EXISTS
+# ===================================
+source = Path(normalized_path)
+
+if not source.exists():
+    raise Exception(f"Path does not exist: {normalized_path}")
+
+if not source.is_dir():
+    raise Exception(f"Path is not a directory: {normalized_path}")
+
+# ===================================
+# 3. COUNT & VALIDATE IMAGES
+# ===================================
+image_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+image_files = [
+    f for f in source.rglob('*') 
+    if f.suffix.lower() in image_extensions
+]
+
+image_count = len(image_files)
+
+if image_count < 4:
+    raise Exception(f"Minimum 4 images required, found {image_count}")
+
+if image_count > 10000:
+    raise Exception(f"Maximum 10,000 images exceeded, found {image_count}")
+
+# Calculate total size
+total_size_bytes = sum(f.stat().st_size for f in image_files)
+total_size_mb = round(total_size_bytes / (1024 * 1024), 2)
+
+# ===================================
+# 4. INSPECT DATASET (Sample Analysis)
+# ===================================
+sample_size = min(10, image_count)
+sample = random.sample(image_files, sample_size)
+
+resolutions = []
+has_txt_count = 0
+sample_captions = []
+
+for img_path in sample:
+    # Check resolution
+    try:
+        img = Image.open(img_path)
+        width, height = img.size
+        resolutions.append((width, height))
+        img.close()
+    except Exception as e:
+        print(f"Error reading {img_path}: {e}")
+        continue
+    
+    # Check for caption file
+    txt_path = img_path.with_suffix('.txt')
+    if txt_path.exists():
+        has_txt_count += 1
+        # Read sample caption
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            caption = f.read().strip()
+            sample_captions.append(caption)
+
+# ===================================
+# 5. DETECTION LOGIC
+# ===================================
+
+# Analyze resolutions
+unique_resolutions = list(set(resolutions))
+avg_width = sum(r[0] for r in resolutions) / len(resolutions)
+avg_height = sum(r[1] for r in resolutions) / len(resolutions)
+
+# Calculate aspect ratio variance
+aspect_ratios = [w/h for w, h in resolutions]
+aspect_variance = max(aspect_ratios) - min(aspect_ratios)
+
+# Determine target resolution based on model
+target_resolutions = {
+    "SD1.5": 512,
+    "SDXL": 1024,
+    "Flux": 1024,
+    "flux_kontext": 1024,
+    "wan22": 512,
+    "hunyuan": 1024,
+    "qwen_image": 1024
+}
+target_res = target_resolutions.get(model_base, 1024)
+
+# DETECT: Needs Preprocessing?
+needs_preprocessing = False
+preprocessing_reason = ""
+
+if len(unique_resolutions) > 1:
+    needs_preprocessing = True
+    preprocessing_reason = f"Mixed resolutions detected: {len(unique_resolutions)} unique sizes"
+elif avg_width != target_res or avg_height != target_res:
+    needs_preprocessing = True
+    preprocessing_reason = f"Images not at target resolution ({target_res}px)"
+
+# DETECT: Needs Captioning?
+needs_captioning = False
+captioning_reason = ""
+
+caption_coverage = has_txt_count / sample_size
+
+if caption_coverage < 0.8:
+    needs_captioning = True
+    captioning_reason = f"Only {int(caption_coverage * 100)}% of images have captions"
+else:
+    # Check if captions contain LoRA token
+    token_found = sum(1 for cap in sample_captions if lora_token.lower() in cap.lower())
+    token_coverage = token_found / len(sample_captions) if sample_captions else 0
+    
+    if token_coverage < 0.8:
+        needs_captioning = True
+        captioning_reason = f"Captions exist but LoRA token '{lora_token}' missing in {int((1-token_coverage)*100)}%"
+
+# ===================================
+# 6. GENERATE INSPECTION REPORT
+# ===================================
+inspection_report = {
+    "image_count": image_count,
+    "total_size_mb": total_size_mb,
+    "sample_size": sample_size,
+    "unique_resolutions": len(unique_resolutions),
+    "avg_resolution": [int(avg_width), int(avg_height)],
+    "target_resolution": target_res,
+    "aspect_variance": round(aspect_variance, 3),
+    "caption_coverage": round(caption_coverage, 2),
+    "needs_preprocessing": needs_preprocessing,
+    "preprocessing_reason": preprocessing_reason,
+    "needs_captioning": needs_captioning,
+    "captioning_reason": captioning_reason,
+    "sample_resolutions": resolutions,
+    "sample_captions": sample_captions[:3]  # First 3 captions
+}
+
+# ===================================
+# 7. OUTPUT
+# ===================================
+return {
+    "job_id": job_id,
+    "normalized_path": normalized_path,
+    "image_count": image_count,
+    "total_size_mb": total_size_mb,
+    "needs_preprocessing": needs_preprocessing,
+    "needs_captioning": needs_captioning,
+    "inspection_report": json.dumps(inspection_report, indent=2),
+    "status": "validated"
+}
+Then, in n8n:
+javascript// Update Airtable node
+UPDATE record WHERE job_id = $json.job_id:
+- normalized_path = $json.normalized_path
+- image_count = $json.image_count
+- total_size_mb = $json.total_size_mb
+- needs_preprocessing = $json.needs_preprocessing
+- needs_captioning = $json.needs_captioning
+- inspection_report = $json.inspection_report
+- status = "validated"
+
+// IF node: Route to next workflow
+IF $json.needs_preprocessing == true:
+  → Trigger Workflow 2
+ELSE IF $json.needs_captioning == true:
+  → Trigger Workflow 3
+ELSE:
+  → Trigger Workflow 4
+
+🖼️ Workflow 2: Image Preprocessor
+Purpose: Resize, crop, and organize images into aspect buckets
+python# n8n Workflow: "2_Image_Preprocessor"
+# Language: Python (Code node)
+
+import os
+from pathlib import Path
+from PIL import Image
+import json
+import math
+
+# INPUT
+job_id = $input.item.json.job_id
+normalized_path = $input.item.json.normalized_path
+lora_token = $input.item.json.lora_token
+model_base = $input.item.json.model_base
+image_count = $input.item.json.image_count
+
+# ===================================
+# 1. DETERMINE TARGET RESOLUTION
+# ===================================
+target_resolutions = {
+    "SD1.5": 512,
+    "SDXL": 1024,
+    "Flux": 1024,
+    "flux_kontext": 1024,
+    "wan22": 512,
+    "hunyuan": 1024,
+    "qwen_image": 1024
+}
+target_res = target_resolutions.get(model_base, 1024)
+
+# ===================================
+# 2. CREATE OUTPUT DIRECTORY
+# ===================================
+# Format: {normalized_path}/{job_id}_{lora_token}_{model_base}_v1/
+version = "v1"  # Could be incremented if job is rerun
+output_folder_name = f"{job_id}_{lora_token}_{model_base}_{version}"
+processed_dir = Path(normalized_path) / output_folder_name
+
+os.makedirs(processed_dir, exist_ok=True)
+
+# ===================================
+# 3. ANALYZE FOR ASPECT BUCKETING
+# ===================================
+source = Path(normalized_path)
+image_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+image_files = [
+    f for f in source.rglob('*') 
+    if f.suffix.lower() in image_extensions
+    and output_folder_name not in str(f)  # Don't process already processed files
+]
+
+aspect_ratios = []
+for img_path in image_files:
+    try:
+        img = Image.open(img_path)
+        ratio = img.width / img.height
+        aspect_ratios.append(ratio)
+        img.close()
+    except:
+        continue
+
+# Calculate variance
+import numpy as np
+variance = np.std(aspect_ratios)
+
+# Decide on bucketing
+use_aspect_bucketing = variance > 0.3
+
+if use_aspect_bucketing:
+    # Generate buckets based on target resolution
+    if target_res == 512:
+        buckets = ["512x512", "512x768", "768x512"]
+    elif target_res == 1024:
+        buckets = ["1024x1024", "1024x1536", "1536x1024"]
+    else:
+        buckets = [f"{target_res}x{target_res}"]
+else:
+    buckets = [f"{target_res}x{target_res}"]
+
+# Create bucket directories
+for bucket in buckets:
+    os.makedirs(processed_dir / bucket, exist_ok=True)
+
+# ===================================
+# 4. HELPER FUNCTIONS
+# ===================================
+def smart_crop(img, target_w, target_h):
+    """Center crop with optional face detection"""
+    orig_w, orig_h = img.size
+    orig_ratio = orig_w / orig_h
+    target_ratio = target_w / target_h
+    
+    if orig_ratio > target_ratio:
+        # Image is wider - crop width
+        new_w = int(orig_h * target_ratio)
+        left = (orig_w - new_w) // 2
+        img_cropped = img.crop((left, 0, left + new_w, orig_h))
+    else:
+        # Image is taller - crop height
+        new_h = int(orig_w / target_ratio)
+        top = (orig_h - new_h) // 2
+        img_cropped = img.crop((0, top, orig_w, top + new_h))
+    
+    return img_cropped
+
+def assign_to_bucket(img, buckets):
+    """Assign image to closest aspect ratio bucket"""
+    img_ratio = img.width / img.height
+    
+    best_bucket = buckets[0]
+    best_diff = float('inf')
+    
+    for bucket in buckets:
+        bucket_w, bucket_h = map(int, bucket.split('x'))
+        bucket_ratio = bucket_w / bucket_h
+        diff = abs(img_ratio - bucket_ratio)
+        
+        if diff < best_diff:
+            best_diff = diff
+            best_bucket = bucket
+    
+    return best_bucket
+
+# ===================================
+# 5. PROCESS IMAGES
+# ===================================
+processed_count = 0
+failed_files = []
+bucket_counts = {bucket: 0 for bucket in buckets}
+
+for img_path in image_files:
+    try:
+        # Read image
+        img = Image.open(img_path)
+        
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Determine bucket
+        if use_aspect_bucketing:
+            bucket = assign_to_bucket(img, buckets)
+        else:
+            bucket = buckets[0]
+        
+        # Get target dimensions
+        bucket_w, bucket_h = map(int, bucket.split('x'))
+        
+        # Crop and resize
+        img_cropped = smart_crop(img, bucket_w, bucket_h)
+        img_resized = img_cropped.resize((bucket_w, bucket_h), Image.LANCZOS)
+        
+        # Save as PNG
+        output_filename = img_path.stem + ".png"
+        output_path = processed_dir / bucket / output_filename
+        img_resized.save(output_path, "PNG", optimize=True)
+        
+        img.close()
+        img_resized.close()
+        
+        processed_count += 1
+        bucket_counts[bucket] += 1
+        
+    except Exception as e:
+        failed_files.append({
+            "file": str(img_path),
+            "error": str(e)
+        })
+
+# ===================================
+# 6. QUALITY CHECK
+# ===================================
+if processed_count != len(image_files):
+    print(f"Warning: Processed {processed_count}/{len(image_files)} images")
+
+# ===================================
+# 7. GENERATE REPORT
+# ===================================
+preprocessing_report = {
+    "original_count": len(image_files),
+    "processed_count": processed_count,
+    "failed_count": len(failed_files),
+    "used_aspect_bucketing": use_aspect_bucketing,
+    "aspect_variance": float(variance),
+    "buckets": bucket_counts,
+    "target_resolution": target_res,
+    "output_format": "PNG",
+    "failed_files": failed_files
+}
+
+# ===================================
+# 8. OUTPUT
+# ===================================
+return {
+    "job_id": job_id,
+    "processed_dir": str(processed_dir),
+    "processed_count": processed_count,
+    "preprocessing_report": json.dumps(preprocessing_report, indent=2),
+    "status": "preprocessed"
+}
+Then, in n8n:
+javascript// Update Airtable
+UPDATE record WHERE job_id = $json.job_id:
+- processed_dir = $json.processed_dir
+- processed_image_count = $json.processed_count
+- preprocessing_report = $json.preprocessing_report
+- status = "preprocessed"
+
+// Trigger Workflow 3
+POST to n8n webhook for Workflow 3
+
+📝 Workflow 3: Image Captioner
+Purpose: Generate captions with LoRA token for all images
+python# n8n Workflow: "3_Image_Captioner"
+# Language: Python (Code node)
+
+import os
+from pathlib import Path
+from PIL import Image
+import base64
+import json
+import time
+from openai import OpenAI
+
+# INPUT
+job_id = $input.item.json.job_id
+normalized_path = $input.item.json.normalized_path
+processed_dir = $input.item.json.get('processed_dir')  # May be None
+needs_preprocessing = $input.item.json.needs_preprocessing
+lora_token = $input.item.json.lora_token
+training_type = $input.item.json.training_type
+model_base = $input.item.json.model_base
+
+# OpenAI client
+client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+
+# ===================================
+# 1. DETERMINE INPUT DIRECTORY
+# ===================================
+if needs_preprocessing and processed_dir:
+    input_dir = Path(processed_dir)
+else:
+    input_dir = Path(normalized_path)
+
+# ===================================
+# 2. COLLECT ALL IMAGES
+# ===================================
+image_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+image_files = [
+    f for f in input_dir.rglob('*') 
+    if f.suffix.lower() in image_extensions
+]
+
+total_images = len(image_files)
+
+# ===================================
+# 3. LOAD PROMPT TEMPLATE
+# ===================================
+prompts = {
+    "character": "Describe this image for character LoRA training. Emphasize pose and positioning in space, lighting direction/quality/intensity and shadows, camera–subject relationship (angle, distance, focal-length feel, depth of field, framing), and surroundings. Do not list facial identity details or unique identifiers; avoid brand/style words.",
+    
+    "object": "Describe this image for object LoRA training. Focus on environment and optics: lighting direction/quality/intensity and shadows/reflections, camera–subject relationship (angle, distance, depth of field, framing), background context and support surfaces, and general color/material cues visible without naming or identifying the object specifically. Avoid brand names, unique labels, or subjective adjectives.",
+    
+    "style": "Describe the overall scene succinctly, then the dominant color palette and the quality of light (direction, softness/hardness, contrast, time-of-day feel). Mention composition tendencies or rendering approach if evident (e.g., minimal, high-contrast, soft-gradation). End the caption with: 'in the style of {{STYLE}}'. Do not identify brands or subjects.",
+    
+    "scene": "Describe the setting and visible elements with attention to spatial layout and depth cues, composition/framing lines, lighting direction/quality/intensity, and palette. Include materials/textures of major surfaces. Avoid identities, brands, and subjective adjectives.",
+    
+    "motion_lora": "Describe the motion and action in this image. Focus on the type of movement, speed, direction, and any dynamic elements. Describe body positioning, gesture, and flow. Note whether the motion is captured sharply or with motion blur, and describe the energy or intensity of the action."
+}
+
+base_prompt = prompts.get(training_type, prompts["object"])
+final_prompt = f"IMPORTANT: Begin your description with the trigger token '{lora_token}'. Then provide the rest of the description.\n\n{base_prompt}"
+
+# ===================================
+# 4. BATCH PROCESSING WITH RATE LIMITING
+# ===================================
+batch_size = 50
+batches = [image_files[i:i+batch_size] for i in range(0, total_images, batch_size)]
+
+completed = 0
+failed = []
+caption_lengths = []
+token_valid_count = 0
+
+for batch_idx, batch in enumerate(batches):
+    print(f"Processing batch {batch_idx + 1}/{len(batches)}...")
+    
+    for img_path in batch:
+        try:
+            # Read and encode image
+            with open(img_path, 'rb') as f:
+                img_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Determine MIME type
+            ext = img_path.suffix.lower().lstrip('.')
+            mime = f"image/{ext}" if ext != 'jpg' else "image/jpeg"
+            data_uri = f"data:{mime};base64,{img_data}"
+            
+            # Call OpenAI API
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": final_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": data_uri,
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }],
+                max_tokens=300
+            )
+            
+            caption = response.choices[0].message.content.strip()
+            
+            # Validate LoRA token presence
+            if lora_token.lower() in caption.lower():
+                token_valid_count += 1
+            
+            # Track caption length
+            caption_lengths.append(len(caption.split()))
+            
+            # Save caption file
+            txt_path = img_path.with_suffix('.txt')
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(caption)
+            
+            completed += 1
+            
+        except Exception as e:
+            failed.append({
+                "file": str(img_path),
+                "error": str(e)
+            })
+    
+    # Rate limit buffer (6 seconds between batches)
+    if batch_idx < len(batches) - 1:
+        time.sleep(6)
+    
+    # Update progress in Airtable (optional, can be done via HTTP request node)
+    progress_pct = (completed / total_images) * 100
+    print(f"Progress: {progress_pct:.1f}% ({completed}/{total_images})")
+
+# ===================================
+# 5. QUALITY VALIDATION
+# ===================================
+token_accuracy = token_valid_count / total_images if total_images > 0 else 0
+avg_caption_length = sum(caption_lengths) / len(caption_lengths) if caption_lengths else 0
+
+# Calculate cost (OpenAI pricing: ~$0.002 per image for gpt-4o)
+cost_per_image = 0.002
+captioning_cost = round(total_images * cost_per_image, 2)
+
+# ===================================
+# 6. GENERATE REPORT
+# ===================================
+captioning_report = {
+    "total_images": total_images,
+    "successful": completed,
+    "failed": len(failed),
+    "lora_token": lora_token,
+    "lora_token_accuracy": round(token_accuracy, 3),
+    "avg_caption_length": round(avg_caption_length, 1),
+    "captioning_cost_usd": captioning_cost,
+    "failed_files": failed
+}
+
+# ===================================
+# 7. OUTPUT
+# ===================================
+return {
+    "job_id": job_id,
+    "captions_completed": completed,
+    "caption_accuracy": round(token_accuracy * 100, 1),
+    "captioning_cost": captioning_cost,
+    "captioning_report": json.dumps(captioning_report, indent=2),
+    "status": "captioned"
+}
+Then, in n8n:
+javascript// Update Airtable
+UPDATE record WHERE job_id = $json.job_id:
+- captions_completed = $json.captions_completed
+- caption_accuracy = $json.caption_accuracy
+- captioning_cost = $json.captioning_cost
+- captioning_report = $json.captioning_report
+- status = "captioned"
+
+// Trigger Workflow 4
+POST to n8n webhook for Workflow 4
+
+⚙️ Workflow 4: Config Generator
+Purpose: Generate training config files from templates
+python# n8n Workflow: "4_Config_Generator"
+# Language: Python (Code node)
+
+import os
+import json
+from pathlib import Path
+
+# INPUT
+job_id = $input.item.json.job_id
+normalized_path = $input.item.json.normalized_path
+processed_dir = $input.item.json.get('processed_dir')
+needs_preprocessing = $input.item.json.needs_preprocessing
+image_count = $input.item.json.image_count
+lora_token = $input.item.json.lora_token
+model_base = $input.item.json.model_base
+training_type = $input.item.json.training_type
+custom_config = $input.item.json.get('custom_config')  # Optional
+validation_prompts = $input.item.json.get('validation_prompts')  # Optional
+
+# ===================================
+# 1. LOAD TEMPLATE
+# ===================================
+# Template path format: /workspace/templates/{model_base}_{training_type}_config.json
+template_path = f"/workspace/templates/{model_base}_{training_type}_config.json"
+
+if os.path.exists(template_path):
+    with open(template_path, 'r') as f:
+        config_template = json.load(f)
+else:
+    # Fallback to default template
+    template_path = f"/workspace/templates/{model_base}_default_config.json"
+    with open(template_path, 'r') as f:
+        config_template = json.load(f)
+
+# ===================================
+# 2. MERGE CUSTOM CONFIG (if provided)
+# ===================================
+if custom_config:
+    try:
+        custom_config_json = json.loads(custom_config)
+        # Merge: custom values override template
+        config = {**config_template, **custom_config_json}
+        config_source = "custom"
+    except:
+        config = config_template
+        config_source = "template"
+else:
+    config = config_template
+    config_source = "template"
+
+# ===================================
+# 3. FILL DYNAMIC VALUES
+# ===================================
+# Instance prompt (LoRA token)
+config["instance_prompt"] = lora_token
+
+# Output directory (will be in RunPod container)
+config["output_dir"] = f"/output/{job_id}"
+config["logging_dir"] = f"/logs/{job_id}"
+
+# ===================================
+# 4. CONFIGURE DATA PATHS
+# ===================================
+# Determine dataset directory
+if needs_preprocessing:
+    dataset_dir = Path(processed_dir)
+else:
+    dataset_dir = Path(normalized_path)
+
+# List bucket directories (if aspect bucketing was used)
+bucket_dirs = [d for d in dataset_dir.iterdir() if d.is_dir()]
+
+if bucket_dirs:
+    # Multiple buckets
+    datasets_config = []
+    for bucket_dir in bucket_dirs:
+        bucket_name = bucket_dir.name
+        try:
+            resolution = int(bucket_name.split('x')[0])
+        except:
+            resolution = 1024  # Default
+        
+        datasets_config.append({
+            "id": bucket_name,
+            "type": "local",
+            "instance_data_dir": f"/dataset/{bucket_name}",
+            "caption_strategy": "filename",
+            "resolution": resolution,
+            "minimum_image_size": resolution
+        })
+    
+    config["data_backend_config"] = {"datasets": datasets_config}
+else:
+    # Single directory
+    target_res = {
+        "SD1.5": 512,
+        "SDXL": 1024,
+        "Flux": 1024
+    }.get(model_base, 1024)
+    
+    config["data_backend_config"] = {
+        "datasets": [{
+            "id": "main",
+            "type": "local",
+            "instance_data_dir": "/dataset",
+            "caption_strategy": "filename",
+            "resolution": target_res,
+            "minimum_image_size": target_res
+        }]
+    }
+
+# ===================================
+# 5. GENERATE VALIDATION PROMPTS
+# ===================================
+if validation_prompts:
+    # User provided prompts
+    prompts = [p.strip() for p in validation_prompts.split('\n') if p.strip()]
+else:
+    # Auto-generate from common patterns
+    # Simple approach: use lora_token with common contexts
+    prompts = [
+        f"{lora_token}",
+        f"{lora_token} close-up",
+        f"{lora_token} in natural light",
+        f"{lora_token} on white background"
+    ]
+
+config["validation_prompt"] = prompts
+config["num_validation_images"] = min(4, len(prompts))
+
+# ===================================
+# 6. WANDB CONFIGURATION
+# ===================================
+config["report_to"] = "wandb"
+config["wandb_project"] = "lora-training"
+config["wandb_run_name"] = f"{job_id}_{lora_token}"
+
+# ===================================
+# 7. CREATE CONFIG DIRECTORY
+# ===================================
+# Save configs in normalized_path (user's location)
+config_dir = dataset_dir / "configs"
+os.makedirs(config_dir, exist_ok=True)
+
+# Save main config
+with open(config_dir / "config.json", 'w') as f:
+    json.dump(config, f, indent=2)
+
+# Save multidatabackend config
+with open(config_dir / "multidatabackend.json", 'w') as f:
+    json.dump(config["data_backend_config"], f, indent=2)
+
+# Save user prompt library
+with open(config_dir / "user_prompt_library.json", 'w') as f:
+    json.dump({"prompts": prompts}, f, indent=2)
+
+# ===================================
+# 8. ESTIMATE TRAINING TIME/COST
+# ===================================
+# Simple estimation (can be refined)
+steps_per_epoch = image_count
+estimated_epochs = config.get("num_train_epochs", 30)
+batch_size = config.get("train_batch_size", 4)
+gradient_accumulation = config.get("gradient_accumulation_steps", 2)
+
+total_steps = (image_count * estimated_epochs) / (batch_size * gradient_accumulation)
+
+# Assume ~1.2 seconds per step on 4090
+estimated_time_hours = (total_steps * 1.2) / 3600
+
+# Cost: $0.80/hour for 4090
+estimated_cost = round(estimated_time_hours * 0.80, 2)
+
+# ===================================
+# 9. OUTPUT
+# ===================================
+return {
+    "job_id": job_id,
+    "config_dir": str(config_dir),
+    "config_source": config_source,
+    "estimated_training_time": f"{estimated_time_hours:.1f}h",
+    "estimated_cost": estimated_cost,
+    "status": "config_ready"
+}
+Then, in n8n:
+javascript// Update Airtable
+UPDATE record WHERE job_id = $json.job_id:
+- config_dir = $json.config_dir
+- estimated_cost = $json.estimated_cost
+- status = "config_ready"
+
+// Trigger Workflow 5
+POST to n8n webhook for Workflow 5
+
+☁️ Workflow 5: Upload to Backblaze
+Purpose: Upload dataset + configs to cloud storage
+python# n8n Workflow: "5_Upload_Backblaze"
+# Language: Python (Code node)
+
+import os
+from pathlib import Path
+from b2sdk.v2 import B2Api, InMemoryAccountInfo
+import json
+
+# INPUT
+job_id = $input.item.json.job_id
+normalized_path = $input.item.json.normalized_path
+processed_dir = $input.item.json.get('processed_dir')
+config_dir = $input.item.json.config_dir
+needs_preprocessing = $input.item.json.needs_preprocessing
+lora_token = $input.item.json.lora_token
+model_base = $input.item.json.model_base
+
+# ===================================
+# 1. DETERMINE WHAT TO UPLOAD
+# ===================================
+if needs_preprocessing:
+    dataset_dir = Path(processed_dir)
+else:
+    dataset_dir = Path(normalized_path)
+
+# ===================================
+# 2. AUTHENTICATE WITH BACKBLAZE
+# ===================================
+info = InMemoryAccountInfo()
+b2_api = B2Api(info)
+b2_api.authorize_account(
+    "production",
+    os.environ['B2_APPLICATION_KEY_ID'],
+    os.environ['B2_APPLICATION_KEY']
+)
+
+# Get bucket
+bucket = b2_api.get_bucket_by_name("training-datasets")
+
+# ===================================
+# 3. DEFINE REMOTE PATH
+# ===================================
+# Format: jobs/{job_id}_{lora_token}/
+remote_base = f"jobs/{job_id}_{lora_token}"
+
+# ===================================
+# 4. UPLOAD DATASET
+# ===================================
+print("Uploading dataset...")
+uploaded_files = 0
+
+for root, dirs, files in os.walk(dataset_dir):
+    for file in files:
+        local_file = os.path.join(root, file)
+        relative_path = os.path.relpath(local_file, dataset_dir.parent)
+        remote_file = f"{remote_base}/dataset/{relative_path}"
+        
+        bucket.upload_local_file(
+            local_file=local_file,
+            file_name=remote_file.replace('\\', '/')
+        )
+        uploaded_files += 1
+        
+        if uploaded_files % 10 == 0:
+            print(f"Uploaded {uploaded_files} files...")
+
+# ===================================
+# 5. UPLOAD CONFIGS
+# ===================================
+print("Uploading configs...")
+
+for config_file in Path(config_dir).glob('*.json'):
+    remote_file = f"{remote_base}/configs/{config_file.name}"
+    bucket.upload_local_file(
+        local_file=str(config_file),
+        file_name=remote_file
+    )
+
+# ===================================
+# 6. GENERATE URLS
+# ===================================
+# B2 URLs format: b2://bucket-name/path
+dataset_url = f"b2://training-datasets/{remote_base}/dataset/"
+config_url = f"b2://training-datasets/{remote_base}/configs/config.json"
+output_url = f"b2://training-models/{job_id}/"  # Where model will be saved
+
+# ===================================
+# 7. OUTPUT
+# ===================================
+return {
+    "job_id": job_id,
+    "backblaze_dataset_url": dataset_url,
+    "backblaze_config_url": config_url,
+    "backblaze_output_url": output_url,
+    "upload_complete_at": datetime.now().isoformat(),
+    "files_uploaded": uploaded_files,
+    "status": "uploaded"
+}
+Then, in n8n:
+javascript// Update Airtable
+UPDATE record WHERE job_id = $json.job_id:
+- backblaze_dataset_url = $json.backblaze_dataset_url
+- backblaze_config_url = $json.backblaze_config_url
+- backblaze_output_url = $json.backblaze_output_url
+- upload_complete_at = $json.upload_complete_at
+- status = "uploaded"
+
+// Trigger Workflow 6
+POST to n8n webhook for Workflow 6
 ```
 
 ---
 
-## **Workflow 5: Upload to Backblaze**
-```
-INPUT: {job_dir}/
-OUTPUT: Backblaze URLs
+## 🚀 **Workflow 6-9: Training, Monitoring, Analysis, Notification**
 
-1. Create Package Structure
-   package_dir = f"{job_dir}/package/"
-   
-   # Copy processed images
-   shutil.copytree(f"{job_dir}/processed/", f"{package_dir}/dataset/")
-   
-   # Copy configs
-   shutil.copytree(f"{job_dir}/configs/", f"{package_dir}/configs/")
-   
-   # Copy reports
-   shutil.copytree(f"{job_dir}/reports/", f"{package_dir}/metadata/")
+*(These workflows remain mostly as documented earlier, with minor adjustments to use the correct paths)*
 
-2. Upload to Backblaze (Using B2 CLI - No rclone!)
-   
-   # Install if needed: pip install b2
-   from b2sdk.v2 import B2Api, InMemoryAccountInfo
-   
-   # Authenticate
-   info = InMemoryAccountInfo()
-   b2_api = B2Api(info)
-   b2_api.authorize_account("production", APP_KEY_ID, APP_KEY)
-   
-   # Get bucket
-   bucket = b2_api.get_bucket_by_name("training-datasets")
-   
-   # Upload directory
-   remote_path = f"jobs/{job_id}_{lora_token}/"
-   
-   for root, dirs, files in os.walk(package_dir):
-       for file in files:
-           local_file = os.path.join(root, file)
-           relative_path = os.path.relpath(local_file, package_dir)
-           remote_file = remote_path + relative_path
-           
-           bucket.upload_local_file(
-               local_file=local_file,
-               file_name=remote_file
-           )
-   
-   # OR use CLI:
-   b2 sync {package_dir} b2://training-datasets/{remote_path}
-
-3. Generate URLs
-   dataset_url = f"b2://training-datasets/{remote_path}dataset/"
-   config_url = f"b2://training-datasets/{remote_path}configs/config.json"
-   output_url = f"b2://training-models/{job_id}/"
-
-4. Update Airtable
-   - backblaze_dataset_url = dataset_url
-   - backblaze_config_url = config_url
-   - backblaze_output_url = output_url
-   - upload_complete_at = now()
-   - status = "uploaded"
-
-5. Trigger Workflow 6: Launch Training
-```
+### **Key Changes:**
+- Dataset URL: `b2://training-datasets/{job_id}_{lora_token}/dataset/`
+- Config URL: `b2://training-datasets/{job_id}_{lora_token}/configs/config.json`
+- Output URL: `b2://training-models/{job_id}/`
 
 ---
 
-## 🔄 **Updated Workflow Triggers Summary**
+## 📊 **Updated File Structure**
 ```
-Airtable Form Submit
-    ↓
-Job Intake (validation + Slack notification)
-    ↓
-Workflow 1: Path Normalizer & Inspector
-    ├─ IF needs_preprocessing → Workflow 2
-    ├─ ELIF needs_captioning → Workflow 3
-    └─ ELSE → Workflow 4
-    
-Workflow 2: Image Preprocessor
-    ↓
-    └─ → Workflow 3
-    
-Workflow 3: Image Captioner
-    ↓
-    └─ → Workflow 4
-    
-Workflow 4: Config Generator
-    ↓
-    └─ → Workflow 5
-    
-Workflow 5: Upload to Backblaze
-    ↓
-    └─ → Workflow 6
-    
-Workflow 6: Launch RunPod Training
-    ↓
-    └─ → Workflow 7 (polling loop)
-    
-Workflow 7: Monitor Training
-    ↓
-    └─ When complete → Workflow 8
-    
-Workflow 8: Post-Training Analysis
-    ↓
-    └─ → Workflow 9
-    
-Workflow 9: Slack Notification (DONE)
+User's Original Location (e.g., D:/photos/bottles/):
+├─ bottle001.jpg          ← Original files
+├─ bottle002.jpg
+├─ bottle003.jpg
+│
+└─ job_123_sks_fragrancebottle_SDXL_v1/  ← Created by preprocessing
+   ├─ 1024x1024/
+   │  ├─ bottle001.png
+   │  ├─ bottle001.txt    ← Captions
+   │  ├─ bottle002.png
+   │  └─ bottle002.txt
+   ├─ 1024x1536/
+   │  ├─ bottle003.png
+   │  └─ bottle003.txt
+   └─ configs/
+      ├─ config.json
+      ├─ multidatabackend.json
+      └─ user_prompt_library.json
 ```
 
----
-
-## 💾 **Updated Airtable Schema**
-
-### **Table: training_jobs**
+**Then uploaded to Backblaze:**
 ```
-CORE FIELDS:
-- job_id (text, primary key, auto: "job_" + timestamp)
-- created_at (datetime, auto)
-- updated_at (datetime, auto)
-- status (single select):
-    • pending
-    • downloading
-    • downloaded
-    • preprocessing
-    • preprocessed
-    • captioning
-    • captioned
-    • config_ready
-    • uploaded
-    • training
-    • training_complete
-    • analyzing
-    • complete
-    • failed
+b2://training-datasets/
+└─ jobs/
+   └─ job_123_sks_fragrancebottle/
+      ├─ dataset/
+      │  ├─ 1024x1024/
+      │  │  ├─ bottle001.png
+      │  │  └─ bottle001.txt
+      │  └─ 1024x1536/
+      │     ├─ bottle003.png
+      │     └─ bottle003.txt
+      └─ configs/
+         ├─ config.json
+         ├─ multidatabackend.json
+         └─ user_prompt_library.json
 
-INPUT FIELDS (from form):
-- dataset_path (long text)
-- lora_token (text, default: "sks_fragrancebottle")
-- model_base (single select):
-    • SDXL
-    • SD1.5
-    • Flux
-    • flux_kontext
-    • wan22
-    • hunyuan
-    • qwen_image
-- training_type (single select):
-    • character
-    • object
-    • style
-    • scene
-    • motion_lora
-- custom_config (long text, optional)
-- validation_prompts (long text, optional)
+✅ UPDATED TODO LIST
+Phase 1: Setup (Week 1)
 
-WORKFLOW STATE:
-- normalized_dataset_path (text)
-- raw_directory (text)
-- processed_directory (text)
-- config_dir (text)
-- needs_preprocessing (checkbox)
-- needs_captioning (checkbox)
+ Create Airtable base with all fields from schema
+ Set up Slack webhook
+ Install dependencies on n8n server
+ Create template directory structure
+ Set environment variables
 
-DATASET INFO:
-- image_count (number)
-- total_size_mb (number)
-- processed_image_count (number)
+Phase 2: Core Workflows (Week 2-4)
 
-REPORTS (JSON):
-- inspection_report (long text)
-- preprocessing_report (long text)
-- captioning_report (long text)
+ Build Workflow 1: Path Normalizer
+ Build Workflow 2: Image Preprocessor
+ Build Workflow 3: Image Captioner
+ Build Workflow 4: Config Generator
+ Build Workflow 5: Upload to Backblaze
 
-CAPTIONING PROGRESS:
-- captioning_progress (percent)
-- captions_completed (number)
-- caption_accuracy (percent)
+Phase 3: Training Integration (Week 5-6)
 
-CLOUD STORAGE:
-- backblaze_dataset_url (URL)
-- backblaze_config_url (URL)
-- backblaze_output_url (URL)
-- upload_complete_at (datetime)
+ Create SimpleTuner Docker image
+ Build Workflow 6: Launch Training
+ Build Workflow 7: Monitor Training
+ Build Workflow 8: Post-Training Analysis
+ Build Workflow 9: Slack Notification
 
-TRAINING:
-- runpod_job_id (text)
-- wandb_url (URL)
-- training_started_at (datetime)
-- training_completed_at (datetime)
-- training_progress (percent)
-- current_step (text, e.g. "1250/2776")
-- current_loss (number)
-- eta (text, e.g. "1h 15m")
+Phase 4: Testing (Week 7)
 
-RESULTS:
-- best_model_url (URL)
-- best_model_score (number)
-- analysis_report_url (URL)
-
-COSTS:
-- estimated_cost (currency)
-- actual_cost (currency)
-- captioning_cost (currency)
-
-ERROR HANDLING:
-- error_log (long text)
-- retry_count (number)
-```
-
----
-
-## 💰 **Updated Cost Breakdown**
-
-### **Per LoRA Training (247 images, SDXL):**
-```
-Workflow 1: Path Normalization
-- n8n compute: $0.01
-- Download bandwidth: $0.02
-SUBTOTAL: $0.03
-
-Workflow 2: Image Preprocessing
-- n8n compute (Python PIL): $0.03
-- Temporary storage: $0.01
-SUBTOTAL: $0.04
-
-Workflow 3: Image Captioning
-- OpenAI API (247 images × $0.002): $0.49
-- n8n compute: $0.01
-SUBTOTAL: $0.50
-
-Workflow 4: Config Generation
-- n8n compute: $0.00
-SUBTOTAL: $0.00
-
-Workflow 5: Upload to Backblaze
-- Upload bandwidth: $0.01
-- Storage (30 days, 2GB): $0.03
-SUBTOTAL: $0.04
-
-Workflow 6-7: RunPod Training
-- 4090 GPU (2.4 hours × $0.80/hr): $1.92
-- Storage during training: $0.01
-SUBTOTAL: $1.93
-
-Workflow 8: Post-Training Analysis
-- GPT-4V analysis: $0.15
-- Download bandwidth: $0.01
-SUBTOTAL: $0.16
-
-Workflow 9: Slack Notification
-- Free
-SUBTOTAL: $0.00
-
-WandB Tracking: Free (team tier)
-
-TOTAL PER LORA: $2.70
-```
-
-### **At Scale (100 LoRAs/month):**
-```
-Direct Costs:
-- Path normalization: $3
-- Preprocessing: $4
-- Captioning: $50
-- Backblaze storage: $4
-- RunPod training: $193
-- VLM analysis: $16
-TOTAL: $270/month
-
-Infrastructure:
-- n8n self-hosted: $20/month (DigitalOcean)
-- Airtable Pro: $20/month
-TOTAL: $40/month
-
-GRAND TOTAL: $310/month for 100 LoRAs
-COST PER LORA: $3.10
-
-Pricing Strategy:
-- Charge $5-10 per LoRA
-- Profit margin: 60-70%
+ End-to-end test with all model types
+ Test error handling
+ Optimize performance
