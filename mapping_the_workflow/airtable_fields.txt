@@ -1,28 +1,14 @@
-known information not necessarily needed for the form:
-- user_email (for notifications) - we have a general slack channel that will be configured for this no need for custom user ids/or emails
-- user_slack_id (for DMs)
-
 Dataset Input:
-- dataset_path (Windows/Mac/Samba path)
-- lora_token (trigger word, e.g., "sks") - the default should be sks_fragrancebottle
-- model_base (SDXL, SD1.5, Flux, flux kontext, wan22, hunyuan, qwen image, qwen image)
-- training_type (character, object, style, scene, motion lora)
+├─ dataset_path (text)
+│  └─ Example: D:/photos/bottles OR //server/share/images OR /Users/me/dataset
+├─ lora_token (text, default: "sks_fragrancebottle")
+├─ model_base (dropdown)
+│  └─ Options: SDXL, SD1.5, Flux, flux_kontext, wan22, hunyuan, qwen_image
+└─ training_type (dropdown)
+   └─ Options: character, object, style, scene, motion_lora
 
-Processing Options:
-- enable_preprocessing (checkbox) -- we will need an agent/ workflow to detect whether or not the images are preprocessed, and whether or not they have been captioned and based on the results the process would be moved to the appropriate stage
-  - auto_crop (checkbox) - I guess the check box can be checked by default should be configured automatically and by default auto crop or some sort of cropping would happen on the process image stage
-  - target_resolution (dropdown: 512, 768, 1024) - I guess the check box can be checked by default  should be configured automatically and handled in process image stage
-  - aspect_bucket (checkbox)  - can probably be ignored to tied to target resolution. if multiple resolutions are being trained then aspect bucketing has to happen anyway right?
-- enable_advanced_captioning (checkbox) - handled by default in the caption stage 
-  - caption_detail_level (dropdown: basic, detailed, verbose) -  handled by default in the caption stage 
-
-Training Parameters:
-- training_priority (dropdown: economy, standard, fast)- I dont have this kind of functionality 
-- max_training_cost (number, USD) configured on the backend
-- notification_webhook (optional Slack webhook) - by default doesnt need to be there 
-
-Advanced (Optional):
-- custom_config (JSON, for power users) -- sure but this is not required and will the config step either needs to be skipped or needs to fill in the gaps
-- validation_prompts (text area, one per line) -- sure but this is not required and will the config step either needs to be skipped or needs to fill in the gaps 
-
-
+Optional Advanced:
+├─ custom_config (long text, JSON)
+│  └─ If provided, merge with template
+└─ validation_prompts (long text, one per line)
+   └─ If empty, auto-generate from captions
