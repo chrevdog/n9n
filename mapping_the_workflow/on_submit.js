@@ -1156,3 +1156,400 @@ Phase 4: Testing (Week 7)
  End-to-end test with all model types
  Test error handling
  Optimize performance
+
+ What you actually need
+1) Containers (compose up)
+
+
+n8n (webhook + UI)
+
+
+n8n worker(s) for queue mode (parallel jobs)
+
+
+Redis (backing the queue)
+
+
+Your data volume(s) mounted so n8n can see D:\... as a POSIX path inside containers
+
+
+Python + tools inside the n8n image (Pillow, numpy, b2sdk, wandb, ffmpeg, etc.) so your “Python Code” or “Execute Command” steps work locally
+
+
+2) Secrets / env
+
+
+Airtable API + base/table IDs
+
+
+Slack webhook
+
+
+Backblaze B2 S3 creds (key id, key, endpoint)
+
+
+OpenAI key (captioner)
+
+
+WandB key
+
+
+RunPod key (training launcher)
+
+
+n8n encryption key + basic auth
+
+
+3) Hardware
+
+
+CPU: 8 vCPU is comfy for preprocessing + 2–3 concurrent jobs
+
+
+RAM: 16–32 GB (Pillow/NumPy + multiple workers)
+
+
+Disk: fast SSD; size = your largest in-flight dataset × 2 (processing copies)
+
+
+GPU: not needed for n8n; training happens on RunPod
+
+
+OS: Windows host is fine; Docker Desktop binds D:\... into Linux containers
+
+
+
+Docker files
+docker-compose.yml
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports: ["6379:6379"]
+
+  n8n:
+    build: ./n8n
+    restart: unless-stopped
+    env_file: .env
+    ports: ["5678:5678"]
+    depends_on: [redis]
+    volumes:
+      # n8n persistent state
+      - n8n_data:/home/node/.n8n
+      # your templates, scripts, etc.
+      - ./workspace:/workspace
+      # bind your Windows dataset path(s)
+      - "D:/photos:/data/photos:rw"
+      - "D:/ai/scripts:/data/scripts:rw"
+
+  # queue workers (scale these for parallelism)
+  n8n-worker:
+    build: ./n8n
+    restart: unless-stopped
+    env_file: .env
+    command: ["n8n", "worker"]
+    depends_on: [redis]
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workspace:/workspace
+      - "D:/photos:/data/photos:rw"
+      - "D:/ai/scripts:/data/scripts:rw"
+
+volumes:
+  n8n_data:
+
+n8n/Dockerfile
+FROM n8nio/n8n:latest
+
+# Install OS tools you’ll want
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    ffmpeg \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python libs for your pipelines
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Optional: place helper scripts in /workspace/scripts
+WORKDIR /workspace
+USER node
+
+n8n/requirements.txt (starter)
+b2sdk==1.30.0
+boto3==1.34.131               # optional if you prefer S3 API for B2
+botocore==1.34.131
+Pillow==10.4.0
+numpy==1.26.4
+opencv-python==4.10.0.84      # if you want it
+wandb==0.17.5
+openai==1.51.2
+requests==2.32.3
+tqdm==4.66.4
+
+.env (example — fill yours)
+# n8n basics
+N8N_ENCRYPTION_KEY=replace_with_random_32+ chars
+N8N_BASIC_AUTH_ACTIVE=true
+N8N_BASIC_AUTH_USER=admin
+N8N_BASIC_AUTH_PASSWORD=supersecret
+
+# queue mode
+EXECUTIONS_MODE=queue
+QUEUE_BULL_REDIS_HOST=redis
+QUEUE_BULL_REDIS_PORT=6379
+# (optional) hard job timeouts
+EXECUTIONS_TIMEOUT=3600
+EXECUTIONS_TIMEOUT_MAX=14400
+
+# external URLs (adjust)
+N8N_HOST=localhost
+WEBHOOK_URL=http://localhost:5678/
+
+# Backblaze S3-style
+S3_ENDPOINT=https://s3.us-west-001.backblazeb2.com
+S3_FORCE_PATH_STYLE=true
+S3_ACCESS_KEY=YOUR_B2_KEY_ID
+S3_SECRET_KEY=YOUR_B2_APP_KEY
+B2_DEFAULT_BUCKET=training-datasets
+
+# If you also use native b2sdk:
+B2_APPLICATION_KEY_ID=YOUR_B2_KEY_ID
+B2_APPLICATION_KEY=YOUR_B2_APP_KEY
+
+# APIs
+OPENAI_API_KEY=sk-...
+AIRTABLE_TOKEN=pat...
+RUNPOD_API_KEY=...
+WANDB_API_KEY=...
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+
+Run it:
+docker compose up -d --build
+# scale workers as needed:
+docker compose up -d --scale n8n-worker=3
+
+
+How queueing works here
+
+
+Queue mode puts executions into Redis; n8n (main) handles triggers/webhooks/UI, n8n-worker processes jobs.
+
+
+Scale to more parallel jobs with --scale n8n-worker=N.
+
+
+Per-workflow concurrency: in n8n → Workflow Settings:
+
+
+Concurrency (e.g., 2–4)
+
+
+Retry on fail with backoff
+
+
+
+
+Use Rate Limit nodes between API calls (OpenAI, RunPod).
+
+
+Use an IF + Wait loop for WandB/RunPod polling, so workers aren’t blocked unnecessarily.
+
+
+
+Where you can skip URLs (direct disk access)
+Because we bind D:\... into the containers:
+
+
+Workflow 1: Path Normalizer — point to /data/photos/... (no URLs)
+
+
+Workflow 2: Preprocessor — read/write under /data/photos/...
+
+
+Workflow 3: Captioner — read images from /data/..., write .txt right next to them
+
+
+Workflow 4: Config Generator — write /data/.../configs/*.json
+
+
+Only when you hit Workflow 5: Upload to Backblaze do you push to cloud and optionally create presigned URLs for downstream consumers. Everything before that can stay purely filesystem-based.
+
+Node choices (pragmatic)
+
+
+Python work: use an Execute Command node that runs:
+python3 /workspace/scripts/your_step.py --arg1 ... --arg2 ...
+
+or keep your inline “Code (Python)” node if you’ve installed a Python runner; the Execute Command pattern is simpler to test and version (scripts live in workspace/scripts).
+
+
+Backblaze:
+
+
+For bulk upload: either b2sdk via Python script or n8n’s S3 nodes (endpoint = B2 S3).
+
+
+For sharing: S3 → Get Presigned URL (easier than b2sdk for expiring links).
+
+
+
+
+Airtable: use n8n nodes for updates; keep your schema exactly as you outlined.
+
+
+Slack: single “Incoming Webhook” HTTP Request.
+
+
+
+Minimal example scripts you can call
+/workspace/scripts/inspect_dataset.py
+#!/usr/bin/env python3
+import sys, json, random
+from pathlib import Path
+from PIL import Image
+
+dataset_path = Path(sys.argv[1])  # e.g. /data/photos/bottles
+model_base = sys.argv[2]          # SDXL, Flux, etc.
+lora_token = sys.argv[3]
+
+exts = {'.jpg','.jpeg','.png','.webp'}
+files = [p for p in dataset_path.rglob('*') if p.suffix.lower() in exts]
+if len(files) < 4:
+    print(json.dumps({"error": "Minimum 4 images required"})); sys.exit(1)
+
+sample = random.sample(files, min(10, len(files)))
+resolutions, has_txt, caps = [], 0, []
+for p in sample:
+    try:
+        w,h = Image.open(p).size
+        resolutions.append((w,h))
+    except: pass
+    t = p.with_suffix('.txt')
+    if t.exists():
+        has_txt += 1
+        try: caps.append(t.read_text(encoding='utf-8')[:300])
+        except: pass
+
+target_map = {"SD1.5":512,"SDXL":1024,"Flux":1024,"flux_kontext":1024,"wan22":512,"hunyuan":1024,"qwen_image":1024}
+target = target_map.get(model_base,1024)
+
+needs_pre = (len({r for r in resolutions})>1)
+needs_cap = (has_txt/len(sample) if sample else 0) < 0.8
+
+out = {
+  "image_count": len(files),
+  "target_resolution": target,
+  "needs_preprocessing": needs_pre,
+  "needs_captioning": needs_cap,
+  "inspection_report": {
+    "resolutions": resolutions, "sample_captions": caps[:3]
+  }
+}
+print(json.dumps(out))
+
+Call it from an Execute Command node:
+python3 /workspace/scripts/inspect_dataset.py "={{$json.normalized_path}}" "={{$json.model_base}}" "={{$json.lora_token}}"
+
+Parse stdout JSON with a small Code(JS) node and set Airtable fields.
+/workspace/scripts/upload_b2.py (S3 API route)
+#!/usr/bin/env python3
+import os, sys, json, mimetypes
+import boto3
+from pathlib import Path
+
+bucket = os.environ["B2_DEFAULT_BUCKET"]
+endpoint = os.environ["S3_ENDPOINT"]
+key = os.environ["S3_ACCESS_KEY"]
+secret = os.environ["S3_SECRET_KEY"]
+
+dataset_dir = Path(sys.argv[1])    # /data/photos/.../processed or normalized
+remote_base = sys.argv[2]          # jobs/{job_id}_{lora_token}
+
+s3 = boto3.client("s3",
+  endpoint_url=endpoint,
+  aws_access_key_id=key,
+  aws_secret_access_key=secret,
+)
+
+uploaded = 0
+for p in dataset_dir.rglob('*'):
+    if p.is_file():
+        rel = p.relative_to(dataset_dir)
+        keyname = f"{remote_base}/dataset/{rel.as_posix()}"
+        s3.upload_file(str(p), bucket, keyname, ExtraArgs={"ContentType": mimetypes.guess_type(p.name)[0] or "application/octet-stream"})
+        uploaded += 1
+
+print(json.dumps({"files_uploaded": uploaded, "dataset_url": f"b2://{bucket}/{remote_base}/dataset/"}))
+
+Presign a config or any object later with an S3 → Get Presigned URL node.
+
+Handling multiple requests (the “queue” bit)
+
+
+Scale workers: docker compose up -d --scale n8n-worker=4 (4 parallel job executors).
+
+
+Per-workflow:
+
+
+Add Concurrency and Retry settings.
+
+
+Wrap rate-limited sections with Rate Limit.
+
+
+
+
+Airtable status: write status transitions at each major step so you can resume/inspect easily.
+
+
+Idempotency: use job_id-scoped folders (you already do) so re-runs don’t stomp each other.
+
+
+
+Where URLs are unavoidable
+
+
+When a remote service needs access to files (e.g., a RunPod container pulling the dataset directly). In that case, you’ll:
+
+
+Upload to B2 (Workflow 5),
+
+
+Give RunPod a B2 S3 URL / presigned URL or let the training image read from B2 using your creds.
+
+
+
+
+For sharing results (Slack message links) use presigned URLs.
+
+
+Everything else (1–4) can stay local in /data/... with zero URL fuss.
+
+Next actions for you
+
+
+Save the files above (docker-compose.yml, n8n/Dockerfile, n8n/requirements.txt, .env) and run:
+docker compose up -d --build
+docker compose up -d --scale n8n-worker=3
+
+
+
+In your n8n workflows, replace D:\... with /data/....
+
+
+Keep your preprocessing/captioning nodes as Python Execute Command steps calling scripts in /workspace/scripts.
+
+
+Add S3 (B2) nodes for upload and presign in Workflow 5.
+
+
+Turn on queue mode (already configured) and tune concurrency.
+
+
+If you want, I can package your current Python blocks into /workspace/scripts, plus a tiny “library” for common tasks (path utils, B2 upload, presign, Airtable updates), and give you a one-file import for the B2 upload/presign chain that slots into Workflow 5.

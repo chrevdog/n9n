@@ -1,0 +1,861 @@
+{
+  "name": "Pinterest Visual Research → AI-Powered Collection System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pinterest-research",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-trigger-001",
+      "name": "Webhook — Research Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "pinterest-research-intake"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.body.text_prompt }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            },
+            {
+              "id": "condition-2",
+              "leftValue": "={{ $json.body.images }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "if-validate-input-002",
+      "name": "IF — Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\"error\": \"Invalid input\", \"message\": \"Please provide either text_prompt, images array, or both\", \"received\": $json.body} }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-error-003",
+      "name": "Respond — Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [680, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Initialize workflow context and generate unique request ID\nconst requestId = `research_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\nconst timestamp = new Date().toISOString();\n\nconst input = $input.first().json.body;\n\nreturn [{\n  json: {\n    request_id: requestId,\n    timestamp: timestamp,\n    text_prompt: input.text_prompt || null,\n    images: input.images || [],\n    project_context: input.project_context || \"General Research\",\n    has_text: !!input.text_prompt,\n    has_images: Array.isArray(input.images) && input.images.length > 0,\n    input_type: input.text_prompt && input.images?.length > 0 ? \"hybrid\" : \n                input.text_prompt ? \"text_only\" : \"image_only\"\n  }\n}];"
+      },
+      "id": "code-initialize-004",
+      "name": "Code — Initialize Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "route-text",
+              "leftValue": "={{ $json.input_type }}",
+              "rightValue": "text_only",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "switch-input-type-005",
+      "name": "Switch — Route By Input Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "message",
+        "resource": "chat",
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "messages": {
+          "values": [
+            {
+              "message": "=You are a Pinterest search query specialist for creative professionals. Your task is to transform user briefs into highly specific, Pinterest-optimized search queries that yield professional visual references.\n\n**User Brief:** {{ $json.text_prompt }}\n**Project Context:** {{ $json.project_context }}\n\n**Instructions:**\n1. Generate 1 primary query (4-8 words) that directly captures the core visual concept\n2. Generate 3 alternative queries that explore different angles: style variations, related concepts, specific elements\n3. Use descriptive, visual language that Pinterest's algorithm favors\n4. Include specific aesthetic terms (minimalist, vintage, moody, editorial, etc.)\n5. Avoid generic terms; prioritize specific, searchable phrases\n\n**Output as valid JSON only:**\n```json\n{\n  \"primary_query\": \"your primary search term\",\n  \"alternative_queries\": [\n    \"alternative 1\",\n    \"alternative 2\",\n    \"alternative 3\"\n  ],\n  \"search_strategy\": \"brief explanation of approach\"\n}\n```\n\nDO NOT include any text outside the JSON structure. Output ONLY valid JSON."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "chatgpt-text-query-006",
+      "name": "ChatGPT — Generate Text Queries",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [1120, 180],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-gpt4o-credentials",
+          "name": "OpenAI GPT-4o API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "message",
+        "resource": "chat",
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "messages": {
+          "values": [
+            {
+              "message": "=You are a visual analysis expert specializing in extracting Pinterest search queries from reference images.\n\n**Task:** Analyze the provided reference image(s) and extract visual concepts that can be used to generate Pinterest search queries.\n\n**Project Context:** {{ $json.project_context }}\n**Number of Images:** {{ $json.images.length }}\n\n**Extract and describe:**\n1. Visual style and aesthetic (minimalist, maximalist, vintage, modern, editorial, etc.)\n2. Color palette and mood (warm tones, monochromatic, vibrant, muted, etc.)\n3. Composition techniques (flat lay, overhead, symmetrical, rule of thirds, etc.)\n4. Subject matter and key elements (products, botanicals, textures, architecture, etc.)\n5. Photography/design techniques (natural light, hard shadows, soft focus, etc.)\n\n**Then generate:**\n- 1 primary Pinterest search query (4-8 words) that captures the dominant visual style\n- 3 alternative queries exploring different elements observed\n\n**Output as valid JSON only:**\n```json\n{\n  \"visual_analysis\": \"2-3 sentence description of visual elements\",\n  \"primary_query\": \"your primary search term\",\n  \"alternative_queries\": [\n    \"alternative 1\",\n    \"alternative 2\",\n    \"alternative 3\"\n  ],\n  \"search_strategy\": \"brief explanation\"\n}\n```\n\nDO NOT include any text outside the JSON structure. Output ONLY valid JSON.",
+              "options": {
+                "imageUrls": "={{ $json.images.map(img => img.url).join(',') }}"
+              }
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 600
+        }
+      },
+      "id": "chatgpt-image-query-007",
+      "name": "ChatGPT — Analyze Images Generate Queries",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [1120, 400],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-gpt4o-credentials",
+          "name": "OpenAI GPT-4o API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "message",
+        "resource": "chat",
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "messages": {
+          "values": [
+            {
+              "message": "=You are synthesizing multiple inputs to create optimal Pinterest search queries.\n\n**User Text Prompt:** {{ $json.text_prompt }}\n**Visual Analysis from Images:** {{ $json.visual_analysis }}\n**Project Context:** {{ $json.project_context }}\n\n**Task:** Create hybrid search queries that bridge both the described concept (text) and observed visual style (images). Prioritize queries that:\n1. Combine specific text intent with visual style descriptors\n2. Use terminology that appears in both high-quality Pinterest pins and the reference images\n3. Balance specificity with searchability\n\n**Output as valid JSON only:**\n```json\n{\n  \"primary_query\": \"hybrid search term combining text intent and visual style\",\n  \"alternative_queries\": [\n    \"alternative 1\",\n    \"alternative 2\",\n    \"alternative 3\"\n  ],\n  \"search_strategy\": \"brief explanation of synthesis approach\"\n}\n```\n\nDO NOT include any text outside the JSON structure. Output ONLY valid JSON.",
+              "options": {
+                "imageUrls": "={{ $json.images.map(img => img.url).join(',') }}"
+              }
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "chatgpt-hybrid-query-008",
+      "name": "ChatGPT — Synthesize Hybrid Queries",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [1120, 620],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-gpt4o-credentials",
+          "name": "OpenAI GPT-4o API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse ChatGPT JSON response and prepare for Pinterest API calls\nconst items = $input.all();\nconst parsed = [];\n\nitems.forEach(item => {\n  try {\n    let responseText = item.json.message?.content || item.json.text || JSON.stringify(item.json);\n    \n    // Strip markdown code blocks if present\n    responseText = responseText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n    \n    const queryData = JSON.parse(responseText);\n    \n    // Create array of all queries to execute\n    const allQueries = [\n      { query: queryData.primary_query, type: 'primary', strategy: queryData.search_strategy }\n    ];\n    \n    if (Array.isArray(queryData.alternative_queries)) {\n      queryData.alternative_queries.forEach((altQuery, idx) => {\n        allQueries.push({ query: altQuery, type: `alternative_${idx + 1}`, strategy: queryData.search_strategy });\n      });\n    }\n    \n    // Pass through context from earlier nodes\n    const context = item.json.request_id ? item.json : $('Code — Initialize Context').first().json;\n    \n    parsed.push({\n      json: {\n        ...context,\n        queries: allQueries,\n        total_queries: allQueries.length,\n        visual_analysis: queryData.visual_analysis || null\n      }\n    });\n    \n  } catch (error) {\n    // Log parsing error but continue workflow\n    parsed.push({\n      json: {\n        error: 'JSON parsing failed',\n        raw_response: item.json,\n        error_message: error.message\n      }\n    });\n  }\n});\n\nreturn parsed;"
+      },
+      "id": "code-parse-queries-009",
+      "name": "Code — Parse AI Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll"
+      },
+      "id": "merge-query-paths-010",
+      "name": "Merge — All Query Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "queries",
+        "options": {}
+      },
+      "id": "split-queries-011",
+      "name": "Split — Execute Each Query",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.pinterest.com/v5/search/pins",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "pinterestOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.queries.query }}"
+            },
+            {
+              "name": "page_size",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "maxRetries": 3,
+            "retryInterval": 2000,
+            "backoff": {
+              "type": "exponential"
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "http-pinterest-search-012",
+      "name": "HTTP Request — Pinterest Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 400],
+      "credentials": {
+        "pinterestOAuth2Api": {
+          "id": "pinterest-oauth2-api",
+          "name": "Pinterest OAuth2 API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "check-success",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-check-api-success-013",
+      "name": "IF — Check API Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2000, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log API failure to Google Sheets error log\nconst item = $input.first().json;\n\nconst errorLog = {\n  timestamp: new Date().toISOString(),\n  request_id: item.request_id || 'unknown',\n  error_type: 'Pinterest API Failure',\n  status_code: item.statusCode || 'N/A',\n  error_message: item.body?.message || item.error || 'Unknown error',\n  query_attempted: item.queries?.query || 'N/A',\n  full_response: JSON.stringify(item, null, 2)\n};\n\nreturn [{ json: errorLog }];"
+      },
+      "id": "code-log-api-error-014",
+      "name": "Code — Format API Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 580]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1XxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXxX",
+          "mode": "list",
+          "cachedResultName": "Pinterest Research Error Log"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "sheets-log-error-015",
+      "name": "Google Sheets — Log Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 580],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth2",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Pinterest API response into clean, structured format\nconst item = $input.first().json;\nconst responseBody = item.body;\nconst pins = responseBody.items || [];\nconst context = item; // Contains request_id, queries, etc.\n\nconst normalized = [];\n\npins.forEach((pin, index) => {\n  // Calculate relevance score\n  const queryTerms = (context.queries?.query || '').toLowerCase().split(' ');\n  let score = 0;\n  \n  // Title match (weight: 3)\n  const title = (pin.title || '').toLowerCase();\n  queryTerms.forEach(term => {\n    if (title.includes(term)) score += 3;\n  });\n  \n  // Description match (weight: 2)\n  const description = (pin.description || '').toLowerCase();\n  queryTerms.forEach(term => {\n    if (description.includes(term)) score += 2;\n  });\n  \n  // Recency bonus (pins from last 6 months get +5)\n  if (pin.created_at) {\n    const pinAge = Date.now() - new Date(pin.created_at).getTime();\n    const sixMonths = 15552000000; // 180 days in ms\n    if (pinAge < sixMonths) score += 5;\n  }\n  \n  // Image quality indicator (high-res images get +2)\n  const imageWidth = pin.media?.images?.orig?.width || 0;\n  if (imageWidth > 1000) score += 2;\n  \n  // Board follower count bonus (popular boards get +1)\n  const boardFollowers = pin.board?.follower_count || 0;\n  if (boardFollowers > 1000) score += 1;\n  \n  normalized.push({\n    request_id: context.request_id,\n    search_query: context.queries?.query,\n    query_type: context.queries?.type,\n    rank: index + 1,\n    relevance_score: score,\n    pin_id: pin.id,\n    title: pin.title || pin.description?.substring(0, 100) || 'Untitled',\n    description: pin.description || '',\n    image_url: pin.media?.images?.orig?.url || pin.media?.images?.['1200x']?.url || '',\n    thumbnail_url: pin.media?.images?.['400x300']?.url || pin.media?.images?.['236x']?.url || '',\n    board_name: pin.board?.name || 'Unknown',\n    board_id: pin.board?.id || '',\n    creator_username: pin.pinner?.username || 'Unknown',\n    creator_profile: pin.pinner?.profile_url || '',\n    external_link: pin.link || '',\n    created_at: pin.created_at || '',\n    pinterest_url: `https://pinterest.com/pin/${pin.id}/`,\n    repin_count: pin.repin_count || 0,\n    image_width: imageWidth,\n    image_height: pin.media?.images?.orig?.height || 0,\n    dominant_color: pin.dominant_color || '',\n    retrieved_at: new Date().toISOString()\n  });\n});\n\nreturn normalized.map(item => ({ json: item }));"
+      },
+      "id": "code-normalize-results-016",
+      "name": "Code — Normalize Pinterest Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll"
+      },
+      "id": "merge-all-results-017",
+      "name": "Merge — Combine All Search Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate pins by pin_id and sort by relevance score\nconst items = $input.all();\nconst seenPinIds = new Set();\nconst deduped = [];\n\nitems.forEach(item => {\n  const pinId = item.json.pin_id;\n  if (!seenPinIds.has(pinId)) {\n    seenPinIds.add(pinId);\n    deduped.push(item);\n  }\n});\n\n// Sort by relevance score (descending)\ndeduped.sort((a, b) => b.json.relevance_score - a.json.relevance_score);\n\n// Re-assign rank after deduplication and sorting\ndeduped.forEach((item, index) => {\n  item.json.final_rank = index + 1;\n});\n\nreturn deduped;"
+      },
+      "id": "code-dedupe-sort-018",
+      "name": "Code — Dedupe and Sort Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 400]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "title": "={{ \"Pinterest Research - \" + $('Code — Initialize Context').first().json.project_context + \" - \" + new Date().toISOString().split('T')[0] }}",
+        "folderId": {
+          "__rl": true,
+          "value": "1YyYyYyYyYyYyYyYyYyYyYyYyYyYyYyYyYyY",
+          "mode": "list",
+          "cachedResultName": "Pinterest Research Outputs"
+        },
+        "options": {}
+      },
+      "id": "sheets-create-spreadsheet-019",
+      "name": "Google Sheets — Create New Spreadsheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2880, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth2",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "final_rank",
+              "displayName": "Rank",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false,
+              "type": "number"
+            },
+            {
+              "id": "relevance_score",
+              "displayName": "Relevance Score",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false,
+              "type": "number"
+            },
+            {
+              "id": "title",
+              "displayName": "Title",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "Description",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "pinterest_url",
+              "displayName": "Pinterest URL",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "image_url",
+              "displayName": "Image URL",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "board_name",
+              "displayName": "Board Name",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "creator_username",
+              "displayName": "Creator",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "external_link",
+              "displayName": "External Link",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "search_query",
+              "displayName": "Search Query Used",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "Pin Created Date",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            },
+            {
+              "id": "retrieved_at",
+              "displayName": "Retrieved At",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": false,
+              "display": true,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sheets-append-results-020",
+      "name": "Google Sheets — Append All Results",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3100, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-oauth2",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare webhook response with top 10 results\nconst allResults = $input.all();\nconst context = $('Code — Initialize Context').first().json;\nconst spreadsheet = $('Google Sheets — Create New Spreadsheet').first().json;\n\nconst top10 = allResults.slice(0, 10).map(item => ({\n  rank: item.json.final_rank,\n  title: item.json.title,\n  image_url: item.json.image_url,\n  pinterest_url: item.json.pinterest_url,\n  relevance_score: item.json.relevance_score,\n  board_name: item.json.board_name,\n  creator: item.json.creator_username\n}));\n\nconst response = {\n  status: 'success',\n  request_id: context.request_id,\n  query_used: allResults[0]?.json.search_query || 'Multiple queries executed',\n  total_results: allResults.length,\n  unique_pins: allResults.length,\n  top_results: top10,\n  sheet_url: spreadsheet.spreadsheetUrl,\n  sheet_id: spreadsheet.spreadsheetId,\n  processing_time_ms: Date.now() - new Date(context.timestamp).getTime(),\n  input_type: context.input_type,\n  project_context: context.project_context\n};\n\nreturn [{ json: response }];"
+      },
+      "id": "code-prepare-response-021",
+      "name": "Code — Prepare Webhook Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3320, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-success-022",
+      "name": "Respond — Success With Top 10",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3540, 400]
+    },
+    {
+      "parameters": {
+        "content": "## Pinterest Visual Research Workflow\n\n**Input Types:**\n- Text prompt only\n- Images only (with vision analysis)\n- Hybrid (text + images)\n\n**Processing:**\n1. ChatGPT generates Pinterest-optimized queries\n2. Parallel API calls (aggressive strategy)\n3. Deduplication and relevance scoring\n4. New spreadsheet per request\n\n**Error Handling:**\n- API failures logged to dedicated error sheet\n- Continues on individual query failures\n- Exponential backoff retry (3 attempts)",
+        "height": 340,
+        "width": 320,
+        "color": 4
+      },
+      "id": "sticky-note-001",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [240, 80]
+    }
+  ],
+  "connections": {
+    "Webhook — Research Request": {
+      "main": [
+        [
+          {
+            "node": "IF — Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Code — Initialize Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond — Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Initialize Context": {
+      "main": [
+        [
+          {
+            "node": "Switch — Route By Input Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch — Route By Input Type": {
+      "main": [
+        [
+          {
+            "node": "ChatGPT — Generate Text Queries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ChatGPT — Analyze Images Generate Queries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ChatGPT — Synthesize Hybrid Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ChatGPT — Generate Text Queries": {
+      "main": [
+        [
+          {
+            "node": "Merge — All Query Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ChatGPT — Analyze Images Generate Queries": {
+      "main": [
+        [
+          {
+            "node": "Merge — All Query Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "ChatGPT — Synthesize Hybrid Queries": {
+      "main": [
+        [
+          {
+            "node": "Merge — All Query Paths",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge — All Query Paths": {
+      "main": [
+        [
+          {
+            "node": "Code — Parse AI Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Parse AI Queries": {
+      "main": [
+        [
+          {
+            "node": "Split — Execute Each Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split — Execute Each Query": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Pinterest Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request — Pinterest Search": {
+      "main": [
+        [
+          {
+            "node": "IF — Check API Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF — Check API Success": {
+      "main": [
+        [
+          {
+            "node": "Code — Normalize Pinterest Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code — Format API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Format API Error": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets — Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Normalize Pinterest Results": {
+      "main": [
+        [
+          {
+            "node": "Merge — Combine All Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge — Combine All Search Results": {
+      "main": [
+        [
+          {
+            "node": "Code — Dedupe and Sort Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Dedupe and Sort Results": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets — Create New Spreadsheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets — Create New Spreadsheet": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets — Append All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets — Append All Results": {
+      "main": [
+        [
+          {
+            "node": "Code — Prepare Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code — Prepare Webhook Response": {
+      "main": [
+        [
+          {
+            "node": "Respond — Success With Top 10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "timezone": "America/New_York",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "executionTimeout": 300,
+    "errorWorkflow": ""
+  },
+  "meta": {
+    "category": "AI",
+    "tags": ["pinterest", "visual-research", "chatgpt", "gpt-4o", "image-analysis"],
+    "complexity": "High",
+    "version": "1.0.0",
+    "author": "Automation Team",
+    "lastReviewed": "2025-11-11"
+  },
+  "pinData": {}
+}
